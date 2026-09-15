@@ -191,6 +191,15 @@
     return first.charAt(0).toUpperCase() + ". " + last;
   }
 
+  function escHtml(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "\x26amp;")
+      .replace(/</g, "\x26lt;")
+      .replace(/>/g, "\x26gt;")
+      .replace(/"/g, "\x26quot;")
+      .replace(/'/g, "\x26#39;");
+  }
+
   function isTimeLabel(s) {
     s = String(s || "").trim();
     if (!s) return false;
@@ -1521,6 +1530,59 @@
     return arr;
   }
 
+  function longestIdleDeck(deck) {
+    var now = (deck || []).filter(function (p) {
+      return deckBucket(p) === "now";
+    });
+    if (!now.length) now = (deck || []).slice();
+    sortByIdle(now);
+    return now[0] || null;
+  }
+
+  function todayRoster() {
+    var out = [];
+    var seen = {};
+    function add(name, shift, kind, cat, room, role) {
+      if (!name) return;
+      var k = nameKey(name);
+      if (!k || seen[k]) return;
+      seen[k] = 1;
+      out.push({ name: name, shift: shift || "", kind: kind, cat: cat || "", room: room || "", role: role || "" });
+    }
+    var cats = (typeof CATEGORIES !== "undefined") ? CATEGORIES : [];
+    cats.forEach(function (c) {
+      var staff = (g.roomStaff || {})[c.id] || {};
+      (c.rooms || []).forEach(function (r) {
+        var rec = staff[r];
+        if (rec && rec.name && !rec.closed) add(rec.name, rec.shift, "room", c.id, r, "");
+      });
+    });
+    (g.onDeck || []).forEach(function (p) {
+      if (p && p.name) add(p.name, p.shift, "deck", "", p.lastRoom || "", p.role || "");
+    });
+    out.sort(function (a, b) {
+      return lastName(a.name).localeCompare(lastName(b.name));
+    });
+    return out;
+  }
+
+  function findStaffByName(name) {
+    var k = nameKey(name);
+    if (!k) return null;
+    var list = todayRoster();
+    var i, hits;
+    for (i = 0; i < list.length; i++) {
+      if (nameKey(list[i].name) === k) return list[i];
+    }
+    var lastK = nameKey(lastName(name));
+    if (!lastK) return null;
+    hits = [];
+    for (i = 0; i < list.length; i++) {
+      if (nameKey(lastName(list[i].name)) === lastK) hits.push(list[i]);
+    }
+    return hits.length === 1 ? hits[0] : null;
+  }
+
   function splitDeck(list) {
     var now = [], later = [], gone = [];
     (list || []).forEach(function (p) {
@@ -2186,6 +2248,13 @@
     if (purpose === "relief" && (!rec || !rec.name)) return;
     var planned = purpose === "relief" ? plannedInn(cat, room) : null;
     var plannedKey = planned ? nameKey(planned.name) : "";
+    if (purpose === "relief" && !planned) {
+      var idle = longestIdleDeck(list.deck);
+      if (idle) {
+        planned = { name: idle.name, from: "deck", fromCat: "", fromRoom: "", shift: idle.shift };
+        plannedKey = nameKey(idle.name);
+      }
+    }
 
     var deckPills = list.deck.map(function (p) {
       return rosterPill(p, "", "deck", "", "");
@@ -2207,7 +2276,16 @@
     } else {
       title = "Relief for " + room;
       sub = shiftPillHtml(rec.shift) + '<span class="staff-name">' + chipName(rec.name) + "</span> out at " +
-        waveClock(list.wave) + (planned ? " · now " + chipName(planned.name) : "");
+        waveClock(list.wave);
+    }
+
+    var suggestHtml = "";
+    if (purpose === "relief" && planned && planned.name) {
+      suggestHtml =
+        '<button type="button" class="sites-choice relief-suggest" id="relief-suggest-btn">' +
+        "<strong>Send " + chipName(planned.name) + "</strong>" +
+        "<span>" + (planned.from === "room" ? (planned.fromRoom || "in a room") : "On deck · longest idle") +
+        " · tap to place</span></button>";
     }
 
     var ov = document.createElement("div");
@@ -2217,6 +2295,7 @@
       '<div class="relief-roster-card">' +
       '<div class="relief-roster-title">' + title + "</div>" +
       '<div class="relief-roster-sub">' + sub + "</div>" +
+      suggestHtml +
       (opts.search ? '<input type="search" class="roster-search" placeholder="Search names" autocomplete="off">' : "") +
       '<div class="relief-roster-body">' +
       '<div class="assign-cat-label">On deck</div>' +
@@ -2229,6 +2308,14 @@
     addSheetHandle(ov.querySelector(".relief-roster-card"));
     bindPullDismiss(ov, ".relief-roster-card", closeReliefRoster);
     ov.querySelector(".relief-roster-cancel").onclick = closeReliefRoster;
+    var sug = ov.querySelector("#relief-suggest-btn");
+    if (sug && planned) {
+      sug.onclick = function (ev) {
+        ev.stopPropagation();
+        if (planned.from === "room") pickRelief("room", planned.fromCat, planned.fromRoom, plannedKey, cat, room);
+        else pickRelief("deck", "", "", plannedKey, cat, room);
+      };
+    }
     ov.querySelectorAll(".roster-pill").forEach(function (el) {
       if (plannedKey && el.getAttribute("data-rkey") === plannedKey) el.classList.add("selected");
       el.onclick = function (ev) {
@@ -4647,6 +4734,15 @@
         ".sites-choice{width:100%;display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;padding:12px 14px;margin:0 0 8px;border-radius:12px;border:1.5px solid rgba(160,98,42,.22);background:#FDF6EC;color:#1E0E04;cursor:pointer;font:inherit;}" +
         ".sites-choice strong{font-size:15px;color:#1E0E04;}" +
         ".sites-choice span{font-size:12px;color:#7A4E2D;}" +
+        ".relief-suggest{background:linear-gradient(135deg,#FFF0D8,#FFE4A0)!important;border-color:#C8781A!important;}" +
+        ".relief-suggest strong{font-size:16px;}" +
+        ".breaker-jobs{display:flex;flex-direction:column;gap:6px;}" +
+        ".job-sec{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#1A6A9A;margin:8px 0 2px;}" +
+        ".job-row{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;padding:11px 12px;min-height:44px;border-radius:10px;border:1.5px solid rgba(26,106,154,.22);background:#fff;color:#1E0E04;cursor:pointer;font:inherit;}" +
+        ".job-row .job-main{font-size:14px;font-weight:800;}" +
+        ".job-row .job-sub{font-size:11px;font-weight:700;color:#1A6A9A;flex-shrink:0;}" +
+        ".job-row.job-info{cursor:default;background:#F4F9FD;}" +
+        ".job-empty{font-size:12px;color:#5A7A94;line-height:1.45;padding:4px 2px 2px;}" +
         ".sites-sheet-lead{font-size:13px;font-weight:700;color:#7A4E2D;margin:0 0 8px;}" +
         ".staffing-search{width:100%;box-sizing:border-box;margin:4px 0 10px;padding:11px 12px;border-radius:10px;border:1.5px solid rgba(160,98,42,.3);font-size:15px;color:#1E0E04;outline:none;background:#fff;}" +
         ".staff-edit-row{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 10px;}" +
@@ -4724,6 +4820,64 @@
     bar.appendChild(btn);
   }
 
+  function renderBreakerJobList() {
+    var panel = document.getElementById("breaker-panel");
+    if (!panel) return;
+    var urgent = [];
+    try {
+      Object.keys(sitePrefs || {}).forEach(function (room) {
+        if (sitePrefs[room] && sitePrefs[room].bathroom) urgent.push(room);
+      });
+    } catch (e) {}
+    var due = [];
+    var wIdx = (typeof currentWindow === "number") ? currentWindow : 2;
+    if (wIdx >= 2) {
+      ["late", "dinner"].forEach(function (kind) {
+        collectBreakQueue(kind).forEach(function (it) {
+          if (!it.given && it.room && it.cat) due.push(it);
+        });
+      });
+    }
+    var next = longestIdleDeck(g.onDeck || []);
+    function jobRow(label, sub, onclick) {
+      return '<button type="button" class="job-row" onclick="' + onclick + '">' +
+        '<span class="job-main">' + label + "</span>" +
+        (sub ? '<span class="job-sub">' + sub + "</span>" : "") +
+        "</button>";
+    }
+    var html = '<div class="breaker-panel-inner breaker-jobs">';
+    html += '<div><div class="my-site-name">Breaker</div><div class="my-site-label">Job list · tap a room on the board to mark a break</div></div>';
+    if (urgent.length) {
+      html += '<div class="job-sec">Need a break now</div>';
+      urgent.forEach(function (room) {
+        var nm = "";
+        try { nm = (typeof staffLastName === "function") ? (staffLastName(room) || "") : ""; } catch (e) {}
+        html += jobRow(escHtml(room) + (nm ? " · " + escHtml(nm) : ""), "Urgent", "promptBathroomComplete('" + String(room).replace(/'/g, "\\'") + "')");
+      });
+    }
+    if (due.length) {
+      html += '<div class="job-sec">Due this window</div>';
+      due.slice(0, 12).forEach(function (it) {
+        html += jobRow(
+          escHtml(chipName(it.name)) + " · " + escHtml(it.room),
+          it.kind === "dinner" ? "dinner" : "late",
+          "toggleRoom('" + it.cat + "','" + String(it.room).replace(/'/g, "\\'") + "')"
+        );
+      });
+    }
+    if (next && next.name) {
+      html += '<div class="job-sec">Next to send</div>';
+      html += '<div class="job-row job-info"><span class="job-main">' + escHtml(chipName(next.name)) +
+        '</span><span class="job-sub">On deck · longest idle</span></div>';
+    }
+    if (!urgent.length && !due.length) {
+      html += '<div class="job-empty">No urgent or due rooms right now. Use the board below.</div>';
+    }
+    html += '<button class="assign-action-btn assign-btn-add" onclick="openAssignModal()">Change who I am</button>';
+    html += "</div>";
+    panel.innerHTML = html;
+  }
+
   g.roomStaff = g.roomStaff || {};
   g.onDeck = g.onDeck || [];
   g.reliefPlan = g.reliefPlan || {};
@@ -4743,6 +4897,13 @@
   g.paintWkndStaff = paintWkndStaff;
   g.enhanceEditDayModal = enhanceEditDayModal;
   g.openBoardDesk = openBoardDesk;
+  g.todayRoster = todayRoster;
+  g.findStaffByName = findStaffByName;
+  g.renderBreakerJobList = renderBreakerJobList;
+  g.longestIdleDeck = longestIdleDeck;
+  g.chipName = chipName;
+  g.lastName = lastName;
+  g.nameKey = nameKey;
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () { ensureUploadUi(); wrapDeactivate(); wrapSitesModal(); installAppTapGuard(); installSheetDismiss(); });
