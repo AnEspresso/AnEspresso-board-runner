@@ -1,0 +1,10 @@
+{
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "board-push",
+      "disallowLegacyRuntimeConfig": true,
+      "ignore": ["node_modules", ".git"]
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "anespresso-push",
+  "engines": {
+    "node": "22"
+  },
+  "main": "index.js",
+  "dependencies": {
+    "firebase-admin": "^12.7.0",
+    "firebase-functions": "^6.3.0",
+    "web-push": "^3.6.7"
+  }
+}
