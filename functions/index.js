@@ -3,13 +3,12 @@
 /**
  * AnEspresso board push — 2nd gen, us-central1.
  *
- * notifyBathroomRequest is already deployed and stays as-is (urgent breaks).
- * These add:
- *   onBreakMarked — CRNA ping when their room is marked
- *   onPushTest    — Developer "end-to-end delivery test"
+ * onUrgentBreak  — red Urgent Break button
+ * onBreakMarked  — CRNA ping when their room is marked
+ * onPushTest     — Developer end-to-end delivery test
  *
- * VAPID public key MUST match the client (VAPID_PUBLIC_KEY in index.html).
- * Private key: env VAPID_PRIVATE_KEY (Cloud Run / Functions secret).
+ * VAPID public must match the client. Private is injected at deploy
+ * (__VAPID_PRIVATE__ placeholder). Do not commit the real private key.
  */
 
 const { onValueWritten } = require("firebase-functions/v2/database");
@@ -24,20 +23,18 @@ const db = admin.database();
 
 const VAPID_PUBLIC =
   process.env.VAPID_PUBLIC_KEY ||
-  "BAnJXqd7u6jbAkRqTQ3h3sja9t0FvI0iTQvXVLO_QpvkBZ05JyK01d64YokyO0zW8j2vmi0UrSpQJbKCawlHdXk";
+  "BKMHHLDxgatVMU4rZm8MKLztG1PkGnNkedxpcj8LaWybhN8NhzxnnkY_UfKytxf0QQd5HBHkUsvMZ4eu9lej-Sw";
+const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || "__VAPID_PRIVATE__";
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "mailto:peter@anespresso.com";
 const STALE_MS = 4 * 60 * 60 * 1000;
 const WIN_LABELS = ["Morning", "Lunch", "Afternoon", "Evening"];
 const RTDB = "anespresso-auth-default-rtdb";
 
-function vapidPrivate() {
-  const k = process.env.VAPID_PRIVATE_KEY || "";
-  if (!k) throw new Error("VAPID_PRIVATE_KEY is not set");
-  return k;
-}
-
 function configureWebPush() {
-  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, vapidPrivate());
+  if (!VAPID_PRIVATE || VAPID_PRIVATE.indexOf("__VAPID") === 0) {
+    throw new Error("VAPID_PRIVATE_KEY is not set");
+  }
+  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
 }
 
 function isStale(sub) {
@@ -54,11 +51,7 @@ function subToPush(sub) {
 async function loadSubscriptions() {
   const snap = await db.ref("pushSubscriptions").once("value");
   const val = snap.val() || {};
-  const out = [];
-  Object.keys(val).forEach((id) => {
-    out.push(Object.assign({ id }, val[id] || {}));
-  });
-  return out;
+  return Object.keys(val).map((id) => Object.assign({ id }, val[id] || {}));
 }
 
 async function sendOne(sub, payload) {
@@ -86,8 +79,13 @@ async function writePushLog(entry) {
 }
 
 function windowLabel(wIdx) {
-  const i = Number(wIdx);
-  return WIN_LABELS[i] || "Break";
+  return WIN_LABELS[Number(wIdx)] || "Break";
+}
+
+function audienceIncludes(audience, role) {
+  if (audience === "runner") return role === "runner";
+  if (audience === "runner_breaker") return role === "runner" || role === "breaker";
+  return true;
 }
 
 exports.onBreakMarked = onValueWritten(
@@ -97,7 +95,6 @@ exports.onBreakMarked = onValueWritten(
     const before = event.data.before.val();
     if (!after || !after.done) return;
     if (before && before.done) return;
-
     const room = event.params.room;
     const wIdx = event.params.wIdx;
     const boardId = event.params.boardId;
@@ -112,11 +109,10 @@ exports.onBreakMarked = onValueWritten(
       room,
       wIdx: Number(wIdx),
     };
-
     const subs = await loadSubscriptions();
-    let sent = 0;
-    let stale = 0;
-    let failed = 0;
+    let sent = 0,
+      stale = 0,
+      failed = 0;
     for (const sub of subs) {
       if (sub.notifyBreakMarked === false) continue;
       if (String(sub.room || "") !== String(room)) continue;
@@ -128,14 +124,48 @@ exports.onBreakMarked = onValueWritten(
       if (r.ok) sent += 1;
       else failed += 1;
     }
-    await writePushLog({
-      audience: "room",
+    await writePushLog({ audience: "room", room, sent, stale, failed, kind: "breakMarked" });
+  }
+);
+
+exports.onUrgentBreak = onValueWritten(
+  { ref: "/boards/{boardId}/sitePrefs/{room}/bathroom", instance: RTDB },
+  async (event) => {
+    const after = event.data.after.val();
+    const before = event.data.before.val();
+    if (!after || before) return;
+    const room = event.params.room;
+    const boardId = event.params.boardId;
+    if (!String(boardId || "").startsWith("runner-")) return;
+
+    configureWebPush();
+    const prefSnap = await db.ref("boards/" + boardId + "/sitePrefs/" + room).once("value");
+    const pref = prefSnap.val() || {};
+    const audience = pref.bathroomAudience || "all";
+    const payload = {
+      title: "Urgent break",
+      body: room + " needs a now-break",
+      tag: "urgent-" + room,
+      kind: "urgent",
       room,
-      sent,
-      stale,
-      failed,
-      kind: "breakMarked",
-    });
+    };
+    const subs = await loadSubscriptions();
+    let sent = 0,
+      stale = 0,
+      failed = 0;
+    for (const sub of subs) {
+      if (sub.notifyUrgent === false) continue;
+      const role = sub.role || "crna";
+      if (!audienceIncludes(audience, role)) continue;
+      if (isStale(sub)) {
+        stale += 1;
+        continue;
+      }
+      const r = await sendOne(sub, payload);
+      if (r.ok) sent += 1;
+      else failed += 1;
+    }
+    await writePushLog({ audience, room, sent, stale, failed, kind: "urgent" });
   }
 );
 
@@ -146,21 +176,18 @@ exports.onPushTest = onValueWritten(
     if (!after) return;
     const deviceId = event.params.deviceId;
     const resultRef = db.ref("pushTest/" + deviceId + "/result");
-
     try {
       configureWebPush();
     } catch (err) {
       await resultRef.set({ ts: Date.now(), ok: false, error: "missing-vapid" });
       return;
     }
-
     const snap = await db.ref("pushSubscriptions/" + deviceId).once("value");
     const sub = snap.val();
     if (!sub) {
       await resultRef.set({ ts: Date.now(), ok: false, error: "no-subscription" });
       return;
     }
-
     const payload = {
       title: "AnEspresso test",
       body: "If you see this, notifications can display on this device.",
