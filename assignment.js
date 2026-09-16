@@ -542,182 +542,6 @@
     try { return typeof currentRole !== "undefined" && currentRole === "runner"; } catch (e) { return false; }
   }
 
-  function isDayShiftNow() {
-    var m = hospitalMins();
-    return m >= 7 * 60 && m < 15 * 60 + 30;
-  }
-
-  function defaultStaffBoardView() {
-    try {
-      if (typeof currentRole !== "undefined" && currentRole === "runner") return "board";
-      var breaker = typeof currentRole !== "undefined" && currentRole === "crna" && (myAssignType === "breaker" || !myRoom);
-      if (breaker && !isDayShiftNow()) return "jobs";
-    } catch (e) {}
-    return "board";
-  }
-
-  function getStaffBoardView() {
-    try {
-      if (typeof currentRole !== "undefined" && currentRole === "runner") return "board";
-    } catch (e) {}
-    if (g.staffViewManual && (g.staffBoardView === "board" || g.staffBoardView === "jobs")) return g.staffBoardView;
-    return defaultStaffBoardView();
-  }
-
-  function setStaffBoardView(v) {
-    g.staffViewManual = true;
-    g.staffBoardView = v === "jobs" ? "jobs" : "board";
-    applyStaffBoardView();
-  }
-
-  function viewToggleHtml() {
-    var v = getStaffBoardView();
-    return '<div class="view-toggle" role="tablist">' +
-      '<button type="button" class="' + (v === "board" ? "on" : "") + '" onclick="setStaffBoardView(\'board\')">Whole board</button>' +
-      '<button type="button" class="' + (v === "jobs" ? "on" : "") + '" onclick="setStaffBoardView(\'jobs\')">Job list</button>' +
-      "</div>";
-  }
-
-  function collectWindowDue() {
-    var items = [];
-    var wIdx = (typeof currentWindow === "number") ? currentWindow : 0;
-    var cats = (typeof CATEGORIES !== "undefined") ? CATEGORIES : [];
-    cats.forEach(function (c) {
-      var rooms = [];
-      try {
-        rooms = (typeof activeRooms === "function") ? (activeRooms(c) || []) : (c.rooms || []).slice();
-      } catch (e) {
-        rooms = (c.rooms || []).slice();
-      }
-      rooms.forEach(function (room) {
-        var done = false;
-        try { done = !!(state[wIdx] && state[wIdx][c.id] && state[wIdx][c.id][room]); } catch (e) {}
-        if (done) return;
-        var rec = ((g.roomStaff || {})[c.id] || {})[room] || {};
-        items.push({
-          name: rec.name || "",
-          shift: rec.shift || "",
-          kind: "window",
-          cat: c.id,
-          room: room,
-          given: false
-        });
-      });
-    });
-    items.sort(function (a, b) {
-      var da = catOrder(a.cat), db = catOrder(b.cat);
-      if (da !== db) return da - db;
-      return String(a.room).localeCompare(String(b.room), undefined, { numeric: true });
-    });
-    return items;
-  }
-
-  function eveningJobsPeriod() {
-    if (typeof currentWindow === "number" && currentWindow === 3) return true;
-    try { if (typeof isNighttime === "function" && isNighttime()) return true; } catch (e) {}
-    return !isDayShiftNow();
-  }
-
-  function fillStaffJobs() {
-    var host = document.getElementById("staff-jobs");
-    if (!host) return;
-    var urgent = [];
-    try {
-      Object.keys(sitePrefs || {}).forEach(function (room) {
-        if (sitePrefs[room] && sitePrefs[room].bathroom) urgent.push(room);
-      });
-    } catch (e) {}
-    var due = [];
-    var dueLabel = "Still need a break";
-    if (eveningJobsPeriod()) {
-      dueLabel = "Late & dinner";
-      ["late", "dinner"].forEach(function (kind) {
-        collectBreakQueue(kind).forEach(function (it) {
-          if (!it.given && it.room && it.cat) due.push(it);
-        });
-      });
-    } else {
-      try {
-        dueLabel = (typeof windowLabel === "function" ? windowLabel(currentWindow) : "This window") + " still due";
-      } catch (e) {}
-      due = collectWindowDue();
-    }
-    function jobRow(label, sub, onclick, kind) {
-      var cls = "job-row";
-      if (kind === "late") cls += " job-late";
-      if (kind === "dinner") cls += " job-dinner";
-      if (kind === "urgent") cls += " job-urgent";
-      return '<button type="button" class="' + cls + '" onclick="' + onclick + '">' +
-        '<span class="job-main">' + label + "</span>" +
-        (sub ? '<span class="job-sub">' + sub + "</span>" : "") +
-        "</button>";
-    }
-    var html = '<div class="breaker-jobs">';
-    if (urgent.length) {
-      html += '<div class="job-sec">Need a break now</div>';
-      urgent.forEach(function (room) {
-        var nm = "";
-        try { nm = (typeof staffLastName === "function") ? (staffLastName(room) || "") : ""; } catch (e) {}
-        html += jobRow(escHtml(room) + (nm ? " · " + escHtml(nm) : ""), "Urgent", "promptBathroomComplete('" + String(room).replace(/'/g, "\\'") + "')", "urgent");
-      });
-    }
-    if (due.length) {
-      html += '<div class="job-sec">' + escHtml(dueLabel) + "</div>";
-      due.forEach(function (it) {
-        var sub = it.kind === "dinner" ? "dinner" : (it.kind === "late" ? "late" : "tap to mark");
-        html += jobRow(
-          escHtml(it.name ? chipName(it.name) + " · " + it.room : it.room),
-          sub,
-          "toggleRoom('" + it.cat + "','" + String(it.room).replace(/'/g, "\\'") + "')",
-          it.kind === "dinner" ? "dinner" : (it.kind === "late" ? "late" : "window")
-        );
-      });
-    }
-    if (!urgent.length && !due.length) {
-      html += '<div class="job-empty">No rooms waiting in this window.</div>';
-    }
-    html += "</div>";
-    host.innerHTML = html;
-    host.style.display = "block";
-    host.classList.add("visible");
-  }
-
-  function applyStaffBoardView() {
-    var board = document.getElementById("board");
-    var jobs = document.getElementById("staff-jobs");
-    var runner = false;
-    try { runner = typeof currentRole !== "undefined" && currentRole === "runner"; } catch (e) {}
-    if (runner) {
-      document.body.classList.remove("staff-jobs");
-      if (jobs) {
-        jobs.style.display = "none";
-        jobs.innerHTML = "";
-        jobs.classList.remove("visible");
-      }
-      if (board) board.style.display = "";
-      try { renderOnDeck(); } catch (e) {}
-      return;
-    }
-    var v = getStaffBoardView();
-    var t = document.getElementById("my-site-view-toggle");
-    if (t) t.innerHTML = viewToggleHtml();
-    if (v === "jobs") {
-      document.body.classList.add("staff-jobs");
-      if (board) board.style.display = "none";
-      fillStaffJobs();
-    } else {
-      document.body.classList.remove("staff-jobs");
-      if (jobs) {
-        jobs.style.display = "none";
-        jobs.innerHTML = "";
-        jobs.classList.remove("visible");
-      }
-      if (board) board.style.display = "";
-      var card = document.getElementById("card-ondeck");
-      if (card) card.remove();
-    }
-  }
-
   function stillInHouse(shift) {
     return hospitalHour() < shiftEndHour(shift);
   }
@@ -1846,12 +1670,6 @@
     var board = document.getElementById("board");
     if (!board) return;
     var card = document.getElementById("card-ondeck");
-    var runner = false;
-    try { runner = typeof currentRole !== "undefined" && currentRole === "runner"; } catch (e) {}
-    if (!runner) {
-      if (card) card.remove();
-      return;
-    }
     var list = (g.onDeck || []).filter(function (p) {
       return p && p.name && !isJunkStaff(p.name, p.shift);
     });
@@ -4983,11 +4801,6 @@
         ".relief-suggest{background:linear-gradient(135deg,#FFF0D8,#FFE4A0)!important;border-color:#C8781A!important;}" +
         ".relief-suggest strong{font-size:16px;}" +
         ".breaker-jobs{display:flex;flex-direction:column;gap:6px;}" +
-        ".view-toggle{display:flex;gap:6px;margin-top:8px;}" +
-        ".view-toggle button{flex:1;padding:9px 8px;border-radius:10px;border:1.5px solid rgba(160,98,42,.25);background:#fff;color:#7A4E2D;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;}" +
-        ".view-toggle button.on{background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;border-color:#7A4E2D;}" +
-        "#staff-jobs{display:none;margin:8px 16px 0;padding:12px 14px;background:linear-gradient(135deg,#FFFFFF,#FEF6EC);border:1.5px solid rgba(160,98,42,0.25);border-radius:12px;box-shadow:0 2px 12px rgba(100,50,10,0.07);}" +
-        "#staff-jobs.visible{display:block;}" +
         ".job-sec{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#9A6A38;margin:8px 0 2px;}" +
         ".job-row{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;padding:11px 12px;min-height:44px;border-radius:10px;border:1.5px solid rgba(160,98,42,.22);background:#fff;color:#1E0E04;cursor:pointer;font:inherit;}" +
         ".job-row .job-main{font-size:14px;font-weight:800;}" +
@@ -5084,15 +4897,63 @@
   function renderBreakerJobList() {
     var panel = document.getElementById("breaker-panel");
     if (!panel) return;
-    var v = getStaffBoardView();
-    var html = '<div class="breaker-panel-inner">';
-    html += '<div><div class="my-site-name">Breaker</div><div class="my-site-label">' +
-      (v === "jobs" ? "Job list · tap a name to mark" : "Tap a room on the board to mark a break") +
-      "</div></div>";
-    html += viewToggleHtml();
+    var urgent = [];
+    try {
+      Object.keys(sitePrefs || {}).forEach(function (room) {
+        if (sitePrefs[room] && sitePrefs[room].bathroom) urgent.push(room);
+      });
+    } catch (e) {}
+    var due = [];
+    var wIdx = (typeof currentWindow === "number") ? currentWindow : 2;
+    if (wIdx >= 2) {
+      ["late", "dinner"].forEach(function (kind) {
+        collectBreakQueue(kind).forEach(function (it) {
+          if (!it.given && it.room && it.cat) due.push(it);
+        });
+      });
+    }
+    var next = longestIdleDeck(g.onDeck || []);
+    function jobRow(label, sub, onclick, kind) {
+      var cls = "job-row";
+      if (kind === "late") cls += " job-late";
+      if (kind === "dinner") cls += " job-dinner";
+      if (kind === "urgent") cls += " job-urgent";
+      return '<button type="button" class="' + cls + '" onclick="' + onclick + '">' +
+        '<span class="job-main">' + label + "</span>" +
+        (sub ? '<span class="job-sub">' + sub + "</span>" : "") +
+        "</button>";
+    }
+    var html = '<div class="breaker-panel-inner breaker-jobs">';
+    html += '<div><div class="my-site-name">Breaker</div><div class="my-site-label">Job list · tap a room on the board to mark a break</div></div>';
+    if (urgent.length) {
+      html += '<div class="job-sec">Need a break now</div>';
+      urgent.forEach(function (room) {
+        var nm = "";
+        try { nm = (typeof staffLastName === "function") ? (staffLastName(room) || "") : ""; } catch (e) {}
+        html += jobRow(escHtml(room) + (nm ? " · " + escHtml(nm) : ""), "Urgent", "promptBathroomComplete('" + String(room).replace(/'/g, "\\'") + "')", "urgent");
+      });
+    }
+    if (due.length) {
+      html += '<div class="job-sec">Due this window</div>';
+      due.slice(0, 12).forEach(function (it) {
+        html += jobRow(
+          escHtml(chipName(it.name)) + " · " + escHtml(it.room),
+          it.kind === "dinner" ? "dinner" : "late",
+          "toggleRoom('" + it.cat + "','" + String(it.room).replace(/'/g, "\\'") + "')",
+          it.kind === "dinner" ? "dinner" : "late"
+        );
+      });
+    }
+    if (next && next.name) {
+      html += '<div class="job-sec">Next to send</div>';
+      html += '<div class="job-row job-info"><span class="job-main">' + escHtml(chipName(next.name)) +
+        '</span><span class="job-sub">On deck · longest idle</span></div>';
+    }
+    if (!urgent.length && !due.length) {
+      html += '<div class="job-empty">No urgent or due rooms right now. Use the board below.</div>';
+    }
     html += "</div>";
     panel.innerHTML = html;
-    try { applyStaffBoardView(); } catch (e) {}
   }
 
   g.roomStaff = g.roomStaff || {};
@@ -5121,9 +4982,6 @@
   g.chipName = chipName;
   g.lastName = lastName;
   g.nameKey = nameKey;
-  g.setStaffBoardView = setStaffBoardView;
-  g.getStaffBoardView = getStaffBoardView;
-  g.applyStaffBoardView = applyStaffBoardView;
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () { ensureUploadUi(); wrapDeactivate(); wrapSitesModal(); installAppTapGuard(); installSheetDismiss(); });
