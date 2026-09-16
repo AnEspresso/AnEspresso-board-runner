@@ -511,12 +511,16 @@
 
   function breakGiven(kind, catId, room) {
     if (!catId || !room || typeof state === "undefined") return false;
-    var w = breakWindowFor(kind);
-    try {
-      return !!(state[w] && state[w][catId] && state[w][catId][room]);
-    } catch (e) {
-      return false;
+    function marked(w) {
+      try {
+        return !!(state[w] && state[w][catId] && state[w][catId][room]);
+      } catch (e) {
+        return false;
+      }
     }
+    if (marked(breakWindowFor(kind))) return true;
+    if (typeof currentWindow === "number" && marked(currentWindow)) return true;
+    return false;
   }
 
   function collectBreakQueue(kind) {
@@ -4737,12 +4741,19 @@
         ".relief-suggest{background:linear-gradient(135deg,#FFF0D8,#FFE4A0)!important;border-color:#C8781A!important;}" +
         ".relief-suggest strong{font-size:16px;}" +
         ".breaker-jobs{display:flex;flex-direction:column;gap:6px;}" +
-        ".job-sec{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#1A6A9A;margin:8px 0 2px;}" +
-        ".job-row{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;padding:11px 12px;min-height:44px;border-radius:10px;border:1.5px solid rgba(26,106,154,.22);background:#fff;color:#1E0E04;cursor:pointer;font:inherit;}" +
+        ".job-sec{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#9A6A38;margin:8px 0 2px;}" +
+        ".job-row{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;padding:11px 12px;min-height:44px;border-radius:10px;border:1.5px solid rgba(160,98,42,.22);background:#fff;color:#1E0E04;cursor:pointer;font:inherit;}" +
         ".job-row .job-main{font-size:14px;font-weight:800;}" +
-        ".job-row .job-sub{font-size:11px;font-weight:700;color:#1A6A9A;flex-shrink:0;}" +
-        ".job-row.job-info{cursor:default;background:#F4F9FD;}" +
-        ".job-empty{font-size:12px;color:#5A7A94;line-height:1.45;padding:4px 2px 2px;}" +
+        ".job-row .job-sub{font-size:11px;font-weight:700;color:#7A4E2D;flex-shrink:0;}" +
+        ".job-row.job-info{cursor:default;background:#FDF6EC;}" +
+        ".job-row.job-late{background:#FFF0D8;border-color:#C8781A;}" +
+        ".job-row.job-late .job-sub{color:#A05A10;}" +
+        ".job-row.job-dinner{background:#7A4E2D;border-color:#5A3418;color:#FDF6EC;}" +
+        ".job-row.job-dinner .job-main{color:#FDF6EC;}" +
+        ".job-row.job-dinner .job-sub{color:#F5E0B0;}" +
+        ".job-row.job-urgent{background:#FFF0F0;border-color:#C0392B;}" +
+        ".job-row.job-urgent .job-sub{color:#C0392B;}" +
+        ".job-empty{font-size:12px;color:#9A6A38;line-height:1.45;padding:4px 2px 2px;}" +
         ".sites-sheet-lead{font-size:13px;font-weight:700;color:#7A4E2D;margin:0 0 8px;}" +
         ".staffing-search{width:100%;box-sizing:border-box;margin:4px 0 10px;padding:11px 12px;border-radius:10px;border:1.5px solid rgba(160,98,42,.3);font-size:15px;color:#1E0E04;outline:none;background:#fff;}" +
         ".staff-edit-row{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 10px;}" +
@@ -4757,8 +4768,11 @@
         ".room-btn.kind-dinner{background:#7A4E2D;border-color:#5A3418;color:#FDF6EC;}" +
         ".room-btn.kind-dinner .staff-name{color:#FDF6EC;}" +
         ".room-btn.kind-dinner .shift-pill{background:#FDF6EC;color:#7A4E2D;}" +
-        ".room-btn.kind-late.done{box-shadow:inset 0 0 0 2px rgba(122,78,45,.35);}" +
-        ".room-btn.kind-dinner.done{opacity:.88;box-shadow:inset 0 0 0 2px rgba(253,246,236,.45);}" +
+        ".room-btn.kind-late.done{background:#E8D4A8;border-color:#7A4E2D;opacity:.7;box-shadow:inset 0 0 0 2px rgba(122,78,45,.45);}" +
+        ".room-btn.kind-late.done .staff-name{text-decoration:line-through;}" +
+        ".room-btn.kind-dinner.done{background:#4A2E14;border-color:#2C1A0E;color:#FDF6EC;opacity:.55;box-shadow:none;}" +
+        ".room-btn.kind-dinner.done .staff-name{text-decoration:line-through;color:#FDF6EC;}" +
+        ".room-btn.kind-late.done::after,.room-btn.kind-dinner.done::after{content:' ✓';font-size:12px;font-weight:900;}" +
         ".runner-drawer.desk-only{padding:8px 14px 10px;background:#fff;border-bottom:1px solid rgba(160,98,42,.12);}" +
         ".board-desk-btn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border:none;border-radius:12px;background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;cursor:pointer;font:inherit;text-align:left;box-shadow:0 1px 3px rgba(122,78,45,.2);}" +
         ".board-desk-btn .desk-title{font-size:15px;font-weight:800;}" +
@@ -4839,8 +4853,12 @@
       });
     }
     var next = longestIdleDeck(g.onDeck || []);
-    function jobRow(label, sub, onclick) {
-      return '<button type="button" class="job-row" onclick="' + onclick + '">' +
+    function jobRow(label, sub, onclick, kind) {
+      var cls = "job-row";
+      if (kind === "late") cls += " job-late";
+      if (kind === "dinner") cls += " job-dinner";
+      if (kind === "urgent") cls += " job-urgent";
+      return '<button type="button" class="' + cls + '" onclick="' + onclick + '">' +
         '<span class="job-main">' + label + "</span>" +
         (sub ? '<span class="job-sub">' + sub + "</span>" : "") +
         "</button>";
@@ -4852,7 +4870,7 @@
       urgent.forEach(function (room) {
         var nm = "";
         try { nm = (typeof staffLastName === "function") ? (staffLastName(room) || "") : ""; } catch (e) {}
-        html += jobRow(escHtml(room) + (nm ? " · " + escHtml(nm) : ""), "Urgent", "promptBathroomComplete('" + String(room).replace(/'/g, "\\'") + "')");
+        html += jobRow(escHtml(room) + (nm ? " · " + escHtml(nm) : ""), "Urgent", "promptBathroomComplete('" + String(room).replace(/'/g, "\\'") + "')", "urgent");
       });
     }
     if (due.length) {
@@ -4861,7 +4879,8 @@
         html += jobRow(
           escHtml(chipName(it.name)) + " · " + escHtml(it.room),
           it.kind === "dinner" ? "dinner" : "late",
-          "toggleRoom('" + it.cat + "','" + String(it.room).replace(/'/g, "\\'") + "')"
+          "toggleRoom('" + it.cat + "','" + String(it.room).replace(/'/g, "\\'") + "')",
+          it.kind === "dinner" ? "dinner" : "late"
         );
       });
     }
@@ -4873,7 +4892,6 @@
     if (!urgent.length && !due.length) {
       html += '<div class="job-empty">No urgent or due rooms right now. Use the board below.</div>';
     }
-    html += '<button class="assign-action-btn assign-btn-add" onclick="openAssignModal()">Change who I am</button>';
     html += "</div>";
     panel.innerHTML = html;
   }
