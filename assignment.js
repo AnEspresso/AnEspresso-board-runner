@@ -294,7 +294,15 @@
     if (!end.ap && start.ap === "a" && end.h > 0 && end.h <= 12) {
       if (end.h !== 12) end.h += 12;
     }
-    return { startH: start.h, endH: end.h, label: compactRangeLabel(m[1], m[2]) };
+    var endH = end.h;
+    if (endH <= start.h) endH += 24;
+    return { startH: start.h, endH: endH, label: compactRangeLabel(m[1], m[2]) };
+  }
+
+  function findTimeRange(s) {
+    var m = String(s || "").match(/(\d{1,2}(?::\d{2})?\s*[ap]m?)\s*[-–to]+\s*(\d{1,2}(?::\d{2})?\s*[ap]?m?)/i);
+    if (!m) return null;
+    return parseTimeRange(m[1] + "-" + m[2]);
   }
 
   function parseStaff(raw) {
@@ -477,10 +485,17 @@
     return start;
   }
 
-  function isLeavingSoon(shift) {
-    var end = shiftEndHour(shift);
-    var h = hospitalHour();
-    return h >= end - 1 && h < end + 2;
+  function isLeavingSoon(shift, p) {
+    var t = personHours(p || { shift: shift });
+    if (!t || t.unknown || t.end == null || t.end === 99) return false;
+    var nowM = hospitalMins();
+    var endM;
+    if (t.end > 24) {
+      if (nowM >= (t.start * 60)) endM = t.end * 60;
+      else endM = (t.end - 24) * 60;
+    } else endM = t.end * 60;
+    var until = endM - nowM;
+    return until >= 0 && until <= 70;
   }
 
   function intendedRoomOf(p) {
@@ -499,6 +514,32 @@
     } catch (e) {
       return new Date().getHours();
     }
+  }
+
+  function hospitalMins() {
+    if (typeof g._minsOverride === "number") return g._minsOverride;
+    try {
+      var d = typeof hospitalNow === "function" ? hospitalNow() : new Date(new Date().toLocaleString("en-US", { timeZone: "America/Detroit" }));
+      return d.getHours() * 60 + d.getMinutes();
+    } catch (e) {
+      var n = new Date();
+      return n.getHours() * 60 + n.getMinutes();
+    }
+  }
+
+  function personHours(p) {
+    var shift = (p && p.shift) || "";
+    var tr = parseTimeRange(shift) || findTimeRange(shift) || findTimeRange((p && p.lastRoom) || "");
+    if (tr) return { start: tr.startH, end: tr.endH };
+    var start = shiftStartHour(shift);
+    var end = shiftEndHour(shift);
+    if (end === 99) return { start: start, end: 99, unknown: true };
+    if (end <= start) end += 24;
+    return { start: start, end: end };
+  }
+
+  function canMoveStaff() {
+    try { return typeof currentRole !== "undefined" && currentRole === "runner"; } catch (e) { return false; }
   }
 
   function stillInHouse(shift) {
@@ -1138,7 +1179,7 @@
     if (p.role === "wbf") return "WBF";
     if (p.role === "shift") return "";
     if (parseShiftLabel(p.lastRoom)) return "";
-    if (p.role === "unplaced" && p.lastRoom) return p.lastRoom;
+    if (p.role === "unplaced" && p.lastRoom) return String(p.lastRoom).replace(/([A-Za-z])(\d)/g, "$1 $2");
     if (p.role === "freed" && p.lastRoom) return "last " + p.lastRoom;
     if (p.role === "breaker") return "breaker";
     if (p.role === "call") return "call";
@@ -1499,13 +1540,19 @@
 
   function deckBucket(p) {
     if (!p) return "out";
+    if (p.role === "call") return "now";
     var h = hospitalHour();
-    var start = shiftStartHour(p.shift);
-    var end = shiftEndHour(p.shift);
+    var t = personHours(p);
+    var start = t.start;
+    var end = t.end;
+    if (t.unknown) {
+      if (start > h) return "later";
+      return "now";
+    }
     if (end > 24) {
       var mornEnd = end - 24;
       if (h >= start || h < mornEnd) return "now";
-      return "later";
+      return "out";
     }
     if (start > h) return "later";
     if (h >= end) return "out";
@@ -1536,9 +1583,9 @@
 
   function longestIdleDeck(deck) {
     var now = (deck || []).filter(function (p) {
-      return deckBucket(p) === "now";
+      return deckBucket(p) === "now" && !isLeavingSoon(p.shift, p);
     });
-    if (!now.length) now = (deck || []).slice();
+    if (!now.length) return null;
     sortByIdle(now);
     return now[0] || null;
   }
@@ -1666,7 +1713,10 @@
         (open ? "Hide out · " : "Out · ") + gone.length + (open ? " ▴" : " ▾") + "</button>" +
         (open ? '<div class="ondeck-grid ondeck-out-grid">' + goneChips + "</div>" : "")
       : "";
-    var hint = g.fillTarget
+    var canMove = canMoveStaff();
+    var hint = !canMove
+      ? ""
+      : g.fillTarget
       ? '<div class="ondeck-hint">Tap who goes in ' + g.fillTarget.room + "</div>"
       : (sel
         ? '<div class="ondeck-hint">Tap a room to place them · tap the chip again to cancel</div>'
@@ -1695,9 +1745,14 @@
       document.body.classList.toggle("assigning", !!g.selectedDeck);
       renderOnDeck();
     }
+    if (!canMove) {
+      g.selectedDeck = null;
+      g.fillTarget = null;
+    }
     card.querySelectorAll("[data-deck]").forEach(function (el) {
       el.onclick = function (ev) {
         ev.stopPropagation();
+        if (!canMoveStaff()) return;
         var k = el.getAttribute("data-deck");
         if (g.fillTarget && g.fillTarget.cat && g.fillTarget.room) {
           g.selectedDeck = k;
@@ -1807,6 +1862,11 @@
   }
 
   function assignSelectedTo(catId, room) {
+    if (!canMoveStaff()) {
+      g.selectedDeck = null;
+      try { document.body.classList.remove("assigning"); } catch (e) {}
+      return false;
+    }
     var key = g.selectedDeck;
     if (!key || !catId || !room) return false;
     var list = g.onDeck || [];
@@ -4697,13 +4757,13 @@
         ".relief-arrivals{display:flex;flex-wrap:wrap;gap:6px;padding:0 12px 12px;}" +
         "#shift-change-bar{display:none;padding:4px 14px 10px;font-size:12px;color:#1E0E04;}" +
         ".shift-change-title{font-weight:800;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#7A4E2D;margin:4px 0;}" +
-        ".relief-need-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:6px;}" +
-        ".relief-need{display:flex;align-items:center;gap:3px;min-width:0;width:100%;overflow:hidden;background:#FDF6EC;border:1px solid rgba(160,98,42,.2);border-radius:8px;padding:5px 6px;font:inherit;color:#1E0E04;cursor:pointer;-webkit-appearance:none;appearance:none;}" +
+        ".relief-need-grid{display:grid;grid-template-columns:1fr;gap:6px;margin-top:6px;}" +
+        ".relief-need{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;min-width:0;width:100%;overflow:visible;background:#FDF6EC;border:1px solid rgba(160,98,42,.2);border-radius:8px;padding:8px 10px;font:inherit;color:#1E0E04;cursor:pointer;-webkit-appearance:none;appearance:none;text-align:left;}" +
         ".relief-need.planned{border-color:#7A4E2D;background:#F5E6D0;}" +
-        ".relief-need .relief-room{flex:0 0 auto;font-size:10px;font-weight:800;white-space:nowrap;}" +
-        ".relief-need .staff-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-weight:700;}" +
+        ".relief-need .relief-room{flex:0 0 auto;font-size:11px;font-weight:800;white-space:nowrap;}" +
+        ".relief-need .staff-name{min-width:0;overflow:visible;text-overflow:unset;white-space:normal;font-size:12px;font-weight:700;}" +
         ".relief-need .shift-pill{flex-shrink:0;}" +
-        ".relief-need .relief-arrow{flex-shrink:0;font-size:10px;}" +
+        ".relief-need .relief-arrow{flex-shrink:0;font-size:11px;}" +
         ".relief-need .staff-name.missing{color:#9A6A38;font-weight:500;}" +
         ".relief-need-place{flex-shrink:0;font-size:9px;font-weight:800;padding:2px 5px;border-radius:5px;background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;margin-left:1px;}" +
         ".relief-wave-toggle{width:100%;margin:8px 0 0;padding:10px 12px;min-height:44px;border-radius:10px;border:1px solid rgba(160,98,42,.22);background:#FDF6EC;color:#7A4E2D;font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;text-align:left;cursor:pointer;}" +
