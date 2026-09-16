@@ -1217,8 +1217,12 @@
   function tintRoomBtn(btn, catId, room) {
     if (!btn) return;
     btn.classList.remove("kind-late", "kind-dinner");
-    var win = typeof currentWindow === "number" ? currentWindow : 0;
-    if (win < 2) return;
+    var afterClose = false;
+    try {
+      if (typeof currentWindow === "number" && currentWindow === 3) afterClose = true;
+      else if (hospitalMins() >= 15 * 60 + 30) afterClose = true;
+    } catch (e) {}
+    if (!afterClose) return;
     var k = roomBreakKind(catId, room);
     if (k === "late" || k === "dinner") btn.classList.add("kind-" + k);
   }
@@ -1670,6 +1674,12 @@
     var board = document.getElementById("board");
     if (!board) return;
     var card = document.getElementById("card-ondeck");
+    var runner = false;
+    try { runner = typeof currentRole !== "undefined" && currentRole === "runner"; } catch (e) {}
+    if (!runner) {
+      if (card) card.remove();
+      return;
+    }
     var list = (g.onDeck || []).filter(function (p) {
       return p && p.name && !isJunkStaff(p.name, p.shift);
     });
@@ -4904,15 +4914,18 @@
       });
     } catch (e) {}
     var due = [];
-    var wIdx = (typeof currentWindow === "number") ? currentWindow : 2;
-    if (wIdx >= 2) {
+    var afterClose = false;
+    try {
+      if (typeof currentWindow === "number" && currentWindow === 3) afterClose = true;
+      else if (hospitalMins() >= 15 * 60 + 30) afterClose = true;
+    } catch (e) {}
+    if (afterClose) {
       ["late", "dinner"].forEach(function (kind) {
         collectBreakQueue(kind).forEach(function (it) {
           if (!it.given && it.room && it.cat) due.push(it);
         });
       });
     }
-    var next = longestIdleDeck(g.onDeck || []);
     function jobRow(label, sub, onclick, kind) {
       var cls = "job-row";
       if (kind === "late") cls += " job-late";
@@ -4924,7 +4937,7 @@
         "</button>";
     }
     var html = '<div class="breaker-panel-inner breaker-jobs">';
-    html += '<div><div class="my-site-name">Breaker</div><div class="my-site-label">Job list · tap a room on the board to mark a break</div></div>';
+    html += '<div><div class="my-site-name">Breaker</div><div class="my-site-label">Tap a room on the board to mark a break</div></div>';
     if (urgent.length) {
       html += '<div class="job-sec">Need a break now</div>';
       urgent.forEach(function (room) {
@@ -4944,13 +4957,8 @@
         );
       });
     }
-    if (next && next.name) {
-      html += '<div class="job-sec">Next to send</div>';
-      html += '<div class="job-row job-info"><span class="job-main">' + escHtml(chipName(next.name)) +
-        '</span><span class="job-sub">On deck · longest idle</span></div>';
-    }
     if (!urgent.length && !due.length) {
-      html += '<div class="job-empty">No urgent or due rooms right now. Use the board below.</div>';
+      html += '<div class="job-empty">No urgent rooms right now. Use the board below.</div>';
     }
     html += "</div>";
     panel.innerHTML = html;
