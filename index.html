@@ -169,7 +169,7 @@ let currentWindow=0;let currentRole='crna';let eveningConfirmed=false;let pendin
 const LS_KEY='anespresso_runner_shared_v1';
 const SESSION_KEY='anespresso_runner_session_v1';
 const SYNCLOG_KEY='anespresso_synclog_v1';
-const APP_VERSION=47;const APP_VERSION_LABEL="1.1.3";function versionAhead(a,b){if(typeof a!=="number"||typeof b!=="number")return false;if(a<1e12&&b>1e12)return true;if(a>1e12&&b<1e12)return false;return a>b;}(function(){var el=document.getElementById("splash-version");if(el)el.textContent="v"+APP_VERSION_LABEL;var b=document.getElementById("dev-build-badge");if(b)b.textContent="Board runner v"+APP_VERSION_LABEL+" · isolated board path";})();
+const APP_VERSION=48;const APP_VERSION_LABEL="1.1.4";function versionAhead(a,b){if(typeof a!=="number"||typeof b!=="number")return false;if(a<1e12&&b>1e12)return true;if(a>1e12&&b<1e12)return false;return a>b;}(function(){var el=document.getElementById("splash-version");if(el)el.textContent="v"+APP_VERSION_LABEL;var b=document.getElementById("dev-build-badge");if(b)b.textContent="Board runner v"+APP_VERSION_LABEL+" · isolated board path";})();
 function fbVersionPath(){var file=(typeof isPublicAnespressoHost==='function'&&isPublicAnespressoHost())?'/boards/runner-minVersion.json':'/minVersion.json';return firebaseUrl+file+fbAuthParam();}
 function pagesVersionUrl(){try{return new URL('version.json',location.href).toString()+'?t='+Date.now();}catch(e){return 'version.json?t='+Date.now();}}
 var versionCheckInProgress=false;var forceUpdateShown=false;var _versionPollTimer=null;
@@ -217,7 +217,7 @@ let firebaseSSE=null;let minVersionSSE=null;
 let feedbackRateLimit=[];
 let lastActivityTs=Date.now();
 let authRefreshTimer=null;
-function enforceHttps(){try{if(typeof isProdHost==='function'&&!isProdHost())return false;if(location.protocol==='http:'&&location.hostname!=='localhost'&&location.hostname!=='127.0.0.1'&&location.hostname!=='0.0.0.0'){location.replace(location.href.replace(/^http:/,'https:'));return true;}}catch(e){}return false;}
+function enforceHttps(){try{if(!(isProdHost()||isPublicAnespressoHost()))return false;var h=(location.hostname||'').toLowerCase();if(h==='anespresso.com'||h==='www.anespresso.com'){location.replace('https://app.anespresso.com/'+(location.pathname||'/').replace(/^\//,'')+location.search+location.hash);return true;}if(location.protocol==='http:'&&h!=='localhost'&&h!=='127.0.0.1'&&h!=='0.0.0.0'){location.replace(location.href.replace(/^http:/,'https:'));return true;}}catch(e){}return false;}
 function sanitizeUrlParam(s){if(!s||typeof s!=='string')return '';if(s.length>2048)return '';const clean=s.replace(/[<>"'`\\\x00-\x1F\x7F]/g,'');return clean.trim();}
 function validateFirebaseUrl(url){if(!url||typeof url!=='string')return false;try{const u=new URL(url);if(u.protocol!=='https:')return false;if(!u.hostname.endsWith('.firebaseio.com')&&!u.hostname.endsWith('.firebasedatabase.app'))return false;return true;}catch(e){return false;}}
 function validateApiKey(key){if(!key||typeof key!=='string')return false;if(key.length<20||key.length>100)return false;return /^[A-Za-z0-9_-]+$/.test(key);}
