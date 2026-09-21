@@ -1,14 +1,18 @@
 "use strict";
 
 /**
- * AnEspresso board push — 2nd gen, us-central1.
+ * AnEspresso TEST board push — 2nd gen, us-central1.
+ * Codebase: board-push. Does not replace production notifyBathroomRequest.
  *
- * onUrgentBreak  — red Urgent Break button
- * onBreakMarked  — CRNA ping when their room is marked
- * onPushTest     — Developer end-to-end delivery test
+ * Roster: /runnerPushSubscriptions  (never /pushSubscriptions)
+ * Test:   /runnerPushTest
+ * Log:    /runnerPushLog
+ * Urgent: /boards/runner-DATE/sitePrefs/{room}/runnerUrgent
+ *         (not `bathroom` — that path is what pings live phones)
  *
- * VAPID public must match the client. Private is injected at deploy
+ * VAPID public must match the test client. Private is injected at deploy
  * (__VAPID_PRIVATE__ placeholder). Do not commit the real private key.
+ * Do not rotate the production bathroom function keys.
  */
 
 const { onValueWritten } = require("firebase-functions/v2/database");
@@ -29,6 +33,9 @@ const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "mailto:peter@anespresso.com"
 const STALE_MS = 4 * 60 * 60 * 1000;
 const WIN_LABELS = ["Morning", "Lunch", "Afternoon", "Evening"];
 const RTDB = "anespresso-auth-default-rtdb";
+const SUBS_ROOT = "runnerPushSubscriptions";
+const LOG_ROOT = "runnerPushLog";
+const TEST_ROOT = "runnerPushTest";
 
 function configureWebPush() {
   if (!VAPID_PRIVATE || VAPID_PRIVATE.indexOf("__VAPID") === 0) {
@@ -49,7 +56,7 @@ function subToPush(sub) {
 }
 
 async function loadSubscriptions() {
-  const snap = await db.ref("pushSubscriptions").once("value");
+  const snap = await db.ref(SUBS_ROOT).once("value");
   const val = snap.val() || {};
   return Object.keys(val).map((id) => Object.assign({ id }, val[id] || {}));
 }
@@ -64,7 +71,7 @@ async function sendOne(sub, payload) {
     const status = err && (err.statusCode || err.status);
     if (status === 404 || status === 410) {
       try {
-        await db.ref("pushSubscriptions/" + sub.id).remove();
+        await db.ref(SUBS_ROOT + "/" + sub.id).remove();
       } catch (e) {}
       return { ok: false, reason: "gone" };
     }
@@ -74,7 +81,7 @@ async function sendOne(sub, payload) {
 
 async function writePushLog(entry) {
   try {
-    await db.ref("pushLog").push(Object.assign({ ts: Date.now() }, entry));
+    await db.ref(LOG_ROOT).push(Object.assign({ ts: Date.now(), isolate: "runner" }, entry));
   } catch (e) {}
 }
 
@@ -129,7 +136,7 @@ exports.onBreakMarked = onValueWritten(
 );
 
 exports.onUrgentBreak = onValueWritten(
-  { ref: "/boards/{boardId}/sitePrefs/{room}/bathroom", instance: RTDB },
+  { ref: "/boards/{boardId}/sitePrefs/{room}/runnerUrgent", instance: RTDB },
   async (event) => {
     const after = event.data.after.val();
     const before = event.data.before.val();
@@ -141,7 +148,7 @@ exports.onUrgentBreak = onValueWritten(
     configureWebPush();
     const prefSnap = await db.ref("boards/" + boardId + "/sitePrefs/" + room).once("value");
     const pref = prefSnap.val() || {};
-    const audience = pref.bathroomAudience || "all";
+    const audience = pref.runnerUrgentAudience || pref.bathroomAudience || "all";
     const payload = {
       title: "Urgent break",
       body: room + " needs a now-break",
@@ -170,19 +177,19 @@ exports.onUrgentBreak = onValueWritten(
 );
 
 exports.onPushTest = onValueWritten(
-  { ref: "/pushTest/{deviceId}/requestTs", instance: RTDB },
+  { ref: "/runnerPushTest/{deviceId}/requestTs", instance: RTDB },
   async (event) => {
     const after = event.data.after.val();
     if (!after) return;
     const deviceId = event.params.deviceId;
-    const resultRef = db.ref("pushTest/" + deviceId + "/result");
+    const resultRef = db.ref(TEST_ROOT + "/" + deviceId + "/result");
     try {
       configureWebPush();
     } catch (err) {
       await resultRef.set({ ts: Date.now(), ok: false, error: "missing-vapid" });
       return;
     }
-    const snap = await db.ref("pushSubscriptions/" + deviceId).once("value");
+    const snap = await db.ref(SUBS_ROOT + "/" + deviceId).once("value");
     const sub = snap.val();
     if (!sub) {
       await resultRef.set({ ts: Date.now(), ok: false, error: "no-subscription" });
