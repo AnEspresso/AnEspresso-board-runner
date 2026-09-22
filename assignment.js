@@ -2275,6 +2275,10 @@
       g.heldMove = null;
       g.moveHint = "Tap a room to place " + chipName(rec.name);
       try { document.body.classList.add("assigning"); } catch (e) {}
+      if (g.sitesFn === "people") {
+        g.sitesFn = "rooms";
+        try { if (typeof enhanceEditDayModal === "function") enhanceEditDayModal(true); } catch (e) {}
+      }
     }
   }
 
@@ -2302,6 +2306,7 @@
       moverName = mover.name;
       list.splice(idx, 1);
       if (how === "swap" && occ) sendRecToDeck(occ, toRoom, true);
+      else if (how === "hand" && occ) sendRecToDeck(occ, toRoom, true);
       else if (how === "bump" && occ) sendRecToDeck(occ, toRoom, false);
       g.roomStaff[toCat][toRoom] = cloneStaffRec(mover);
     } else {
@@ -2326,7 +2331,8 @@
         try { if (typeof showToast === "function") showToast(chipName(a.name) + " ↔ " + chipName(b.name)); } catch (e2) {}
         return true;
       }
-      if (how === "bump" && occ) sendRecToDeck(occ, toRoom, false);
+      if (how === "hand" && occ) sendRecToDeck(occ, toRoom, true);
+      else if (how === "bump" && occ) sendRecToDeck(occ, toRoom, false);
       g.roomStaff[toCat][toRoom] = cloneStaffRec(mover);
       g.roomStaff[held.cat] = g.roomStaff[held.cat] || {};
       delete g.roomStaff[held.cat][held.room];
@@ -2338,7 +2344,7 @@
         if (catEditState[toCat].deletedEvents) catEditState[toCat].deletedEvents[toRoom] = { deleted: false, ts: Date.now() };
       }
     } catch (e) {}
-    var keepHand = how === "swap" && held.kind === "deck" && occ;
+    var keepHand = (how === "hand" || (how === "swap" && held.kind === "deck")) && occ;
     if (!keepHand) clearHeld();
     else {
       g.heldMove = null;
@@ -2381,6 +2387,7 @@
       '<span class="staff-last">→ ' + toRoom + "</span></div>" +
       '<div class="deact-ask">Now: ' + shiftPillHtml(occ.shift) + " " + chipName(occ.name) + "</div>" +
       '<button type="button" class="deact-choice" data-act="swap"><span class="deact-choice-title">' + swapTitle + '</span><span class="deact-choice-sub">' + swapSub + '</span></button>' +
+      '<button type="button" class="deact-choice" data-act="hand"><span class="deact-choice-title">Move ' + chipName(occ.name) + ' to another room</span><span class="deact-choice-sub">' + chipName(mover.name) + ' takes ' + toRoom + ' · then tap where ' + chipName(occ.name) + ' goes</span></button>' +
       '<button type="button" class="deact-choice" data-act="bump"><span class="deact-choice-title">Bump ' + chipName(occ.name) + ' to deck</span><span class="deact-choice-sub">' + chipName(mover.name) + ' in ' + toRoom + ' · ' + chipName(occ.name) + ' free</span></button>' +
       '<button type="button" class="deact-cancel" data-act="cancel">Cancel</button></div>';
     ov.addEventListener("click", function (e) { if (e.target === ov) closePlantAsk(); });
@@ -2388,6 +2395,10 @@
     ov.querySelector('[data-act="swap"]').onclick = function () {
       closePlantAsk();
       finishPlant(held, toCat, toRoom, "swap");
+    };
+    ov.querySelector('[data-act="hand"]').onclick = function () {
+      closePlantAsk();
+      finishPlant(held, toCat, toRoom, "hand");
     };
     ov.querySelector('[data-act="bump"]').onclick = function () {
       closePlantAsk();
