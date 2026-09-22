@@ -141,7 +141,7 @@
   function extractRoomTime(s) {
     var fromAt = extractFirstCase(s);
     if (fromAt) return fromAt;
-    var m = String(s || "").trim().match(/\s+(?:@\s*)?(?:0?(\d{1,2})[:.](\d{2})|0?([6-9]\d{2}|1[0-2]\d{2}))\s*$/);
+    var m = String(s || "").trim().match(/\s+(?:@\s*)?(?:0?(\d{1,2})[:.](\d{2})|0?([6-9]\d{2}|1[0-2]\d{2}))(?:\s*[ap]m?)?\s*$/i);
     if (!m) return "";
     if (m[1]) return parseInt(m[1], 10) + ":" + m[2];
     var d = String(m[3] || "");
@@ -153,7 +153,7 @@
   function stripRoomTime(s) {
     var t = String(s || "").replace(/\s+/g, " ").trim();
     if (!extractRoomTime(t)) return t;
-    return t.replace(/\s+(?:@\s*)?(?:0?\d{1,2}[:.]\d{2}|0?[6-9]\d{2}|1[0-2]\d{2})\s*$/i, "").trim();
+    return t.replace(/\s+(?:@\s*)?(?:0?\d{1,2}[:.]\d{2}|0?[6-9]\d{2}|1[0-2]\d{2})(?:\s*[ap]m?)?\s*$/i, "").trim();
   }
 
   function cleanName(s) {
@@ -235,6 +235,7 @@
     if (isTimeLabel(n)) return true;
     if (!/[A-Za-z]{3,}/.test(n)) return true;
     if (/^\d{1,2}-\d{1,2}/.test(n)) return true;
+    if (/^(rotate|available|closed)$/i.test(n)) return true;
     if (/^(11-7a|3-11p)$/i.test(n.replace(/\s/g, ""))) return true;
     return false;
   }
@@ -377,12 +378,13 @@
   function deckRoleForUnknown(roomRaw) {
     var t = String(roomRaw || "").replace(/\s+/g, " ").trim();
     if (!t) return null;
-    if (/^OB\s*(RESIDENT|RES)\b/i.test(t) || /^(OB\s*)?SRNA(\s*OB)?$/i.test(t) || /SRNA\s*OB/i.test(t)) {
-      return { role: "resident", last: "OB" };
-    }
-    if (/^SRNA\b/i.test(t)) {
+    if (/SRNA/i.test(t) || (/^OB\b/i.test(t) && findTimeRange(t))) {
       var tr = findTimeRange(t);
-      return { role: "srna", last: "SRNA", shift: tr ? tr.label : "", student: true };
+      var ob = /OB/i.test(t);
+      return { role: ob ? "resident" : "srna", last: ob ? "OB" : "SRNA", shift: tr ? tr.label : "", student: !ob };
+    }
+    if (/^OB\s*(RESIDENT|RES)\b/i.test(t)) {
+      return { role: "resident", last: "OB" };
     }
     if (/^EVES?$/i.test(t)) return { role: "evening", last: "Eves" };
     if (isTimeLabel(t)) return { role: "night", last: t };
@@ -421,10 +423,14 @@
     if (su === "PET") su = "PET SCAN";
     su = su.replace(/@\s*3\s*P.*/i, "").trim();
     su = su.replace(/^IR\s*(\d+).*/, "IR $1");
+    if (su === "IR") su = "IR";
+    su = su.replace(/^CCL\b.*/, "CATH LAB");
     su = su.replace(/^BMBX?\d*.*/, "BMB");
     su = su.replace(/^CATH(?:ETER)?\s*LAB(?:ORATORY)?(?:\s*\d+)?$/, "CATH LAB");
     su = su.replace(/^CT\b.*/, "CT");
     su = su.replace(/^TEE\b.*/, "TEE");
+    su = su.replace(/^VCU\b.*/, "VCU");
+    su = su.replace(/OR\s*39\s*\/\s*40(?:x\d+)?/i, "OR 38-39");
     su = su.replace("OR39/40", "OR 38-39").replace("OR 39/40", "OR 38-39");
     if (/^MRI IC$/i.test(su)) su = "MRI IC 1";
     else if (/^MRI IC\s*1\b/i.test(su)) su = "MRI IC 1";
@@ -835,7 +841,11 @@
             recordPerson(roomRaw, staffRaw, st, [], "unplaced", refs);
             unmatched.push({ room: roomRaw, staff: staffRaw });
           }
-        } else if (!st || !st.closed) {
+        } else if (st && st.closed) {
+          return;
+        } else if (/rotate/i.test(staffRaw || "")) {
+          return;
+        } else if (!st) {
           unmatched.push({ room: roomRaw, staff: staffRaw });
         }
         return;
@@ -1288,7 +1298,9 @@
     var cells = loadCells(xmlText(sheet), ss);
     var blob = Object.keys(cells).map(function (k) { return cells[k]; }).join(" ").toUpperCase();
     var out;
-    if (blob.indexOf("CRNA SCHEDULE") >= 0 && blob.indexOf("NORTH TOWER") >= 0) out = parseWeekday(cells);
+    if (/CRNA NORTH/i.test(blob) && /STAFF TARGETS/i.test(blob)) {
+      out = { kind: "split", date: excelDate(cell(cells, "A", 1)) || "", rooms: [], closed: [], unmatched: [], people: [], onDeck: [], unsure: [], preview: [], sheetPeople: [] };
+    } else if (blob.indexOf("CRNA SCHEDULE") >= 0 && blob.indexOf("NORTH TOWER") >= 0) out = parseWeekday(cells);
     else out = parseWeekend(cells);
     out.file = fileName || "";
     out.cells = cells;
@@ -1563,6 +1575,11 @@
   }
 
   function applyAssignmentResult(res) {
+    if (!res) return;
+    if (res.kind === "split") {
+      try { if (typeof showToast === "function") showToast("That's the name roster, not the assignment grid"); } catch (e) {}
+      return;
+    }
     try {
       if (!g.roomStaff) g.roomStaff = {};
       var listed = {};
