@@ -150,6 +150,12 @@
     return "";
   }
 
+  function stripRoomTime(s) {
+    var t = String(s || "").replace(/\s+/g, " ").trim();
+    if (!extractRoomTime(t)) return t;
+    return t.replace(/\s+(?:@\s*)?(?:0?\d{1,2}[:.]\d{2}|0?[6-9]\d{2}|1[0-2]\d{2})\s*$/i, "").trim();
+  }
+
   function cleanName(s) {
     s = String(s || "").replace(/\*/g, " ");
     s = s.replace(/\s*\+.*$/, "");
@@ -374,6 +380,10 @@
     if (/^OB\s*(RESIDENT|RES)\b/i.test(t) || /^(OB\s*)?SRNA(\s*OB)?$/i.test(t) || /SRNA\s*OB/i.test(t)) {
       return { role: "resident", last: "OB" };
     }
+    if (/^SRNA\b/i.test(t)) {
+      var tr = findTimeRange(t);
+      return { role: "srna", last: "SRNA", shift: tr ? tr.label : "", student: true };
+    }
     if (/^EVES?$/i.test(t)) return { role: "evening", last: "Eves" };
     if (isTimeLabel(t)) return { role: "night", last: t };
     return null;
@@ -391,7 +401,7 @@
 
   function normalizeRoom(raw) {
     if (!ROOM_INDEX) buildRoomIndex();
-    var s = String(raw || "").replace(/\s+/g, " ").trim();
+    var s = stripRoomTime(raw);
     if (!s) return null;
     var ste = s.match(/^STE\.?\s*(10[1-9])$/i);
     if (ste) {
@@ -414,6 +424,7 @@
     su = su.replace(/^BMBX?\d*.*/, "BMB");
     su = su.replace(/^CATH(?:ETER)?\s*LAB(?:ORATORY)?(?:\s*\d+)?$/, "CATH LAB");
     su = su.replace(/^CT\b.*/, "CT");
+    su = su.replace(/^TEE\b.*/, "TEE");
     su = su.replace("OR39/40", "OR 38-39").replace("OR 39/40", "OR 38-39");
     if (/^MRI IC$/i.test(su)) su = "MRI IC 1";
     else if (/^MRI IC\s*1\b/i.test(su)) su = "MRI IC 1";
@@ -792,6 +803,11 @@
             });
             recordPerson(roomRaw, staffRaw, st, [], "shift", refs);
           } else if (deckGuess) {
+            if (deckGuess.shift && !st.shift) {
+              st.shift = deckGuess.shift;
+              st.kind = breakKind(st.shift) || st.kind;
+            }
+            if (deckGuess.student) st.student = true;
             addDeck(st, deckGuess.last, deckGuess.role);
             recordPerson(roomRaw, staffRaw, st, [], deckGuess.role, refs);
           } else {
@@ -1287,6 +1303,7 @@
       return "WBF " + String(where).replace(/([A-Za-z])(\d)/g, "$1 $2");
     }
     if (p.role === "resident") return p.lastRoom || "OB";
+    if (p.role === "srna") return "SRNA";
     if (p.role === "evening") return "eves";
     if (p.role === "night") return p.lastRoom || "night";
     if (p.role === "shift") return "";
@@ -4288,7 +4305,7 @@
     (res.sheetPeople || []).forEach(function (p) {
       if (!p || !p.name) return;
       var hits = boardHits(p.name);
-      var anywhere = p.role === "wbf" || p.role === "breaker" || p.role === "midnight" || p.role === "call" || p.role === "latestay" || p.role === "resident" || p.role === "evening" || p.role === "night";
+      var anywhere = p.role === "wbf" || p.role === "breaker" || p.role === "midnight" || p.role === "call" || p.role === "latestay" || p.role === "resident" || p.role === "evening" || p.role === "night" || p.role === "srna" || p.role === "runner";
       if (p.role === "shift" || parseShiftLabel(p.roomRaw)) {
         var guessed = (parseShiftLabel(p.roomRaw) || {}).shift || p.shift || "";
         add({
