@@ -2192,6 +2192,21 @@
     renderOnDeck();
   }
 
+  function closeRoomIfEmpty(cat, room) {
+    if (!cat || !room) return false;
+    if (occupantOf(cat, room)) return false;
+    try { deactivateRoomNow(cat, room); } catch (e) {}
+    return true;
+  }
+
+  function sendOccupantToDeck(cat, room) {
+    var rec = occupantOf(cat, room);
+    if (!rec) return false;
+    pushOnDeckFromRoom(cat, room);
+    deactivateRoomNow(cat, room);
+    return true;
+  }
+
   function cloneStaffRec(rec) {
     if (!rec) return { name: "", shift: "", kind: "none", closed: false };
     return {
@@ -2314,10 +2329,8 @@
       if (how === "bump" && occ) sendRecToDeck(occ, toRoom, false);
       g.roomStaff[toCat][toRoom] = cloneStaffRec(mover);
       g.roomStaff[held.cat] = g.roomStaff[held.cat] || {};
-      g.roomStaff[held.cat][held.room] = { name: "", shift: "", kind: "none", closed: false };
-      if (held.closeFrom) {
-        try { deactivateRoomNow(held.cat, held.room); } catch (e3) {}
-      }
+      delete g.roomStaff[held.cat][held.room];
+      closeRoomIfEmpty(held.cat, held.room);
     }
     try {
       if (typeof catEditState !== "undefined" && catEditState[toCat]) {
@@ -4188,14 +4201,14 @@
     var toDeck = ov.querySelector('[data-se="deck"]');
     if (toDeck) toDeck.onclick = function () {
       closeSitesSheet();
-      pushOnDeckFromRoom(cat, room);
+      sendOccupantToDeck(cat, room);
       persistStaff();
-      try { if (typeof showToast === "function") showToast(chipName(rec.name) + " → on deck"); } catch (e) {}
+      try { if (typeof showToast === "function") showToast(chipName(rec.name) + " → on deck · " + room + " closed"); } catch (e) {}
     };
     var move = ov.querySelector('[data-se="move"]');
     if (move) move.onclick = function () {
       closeSitesSheet();
-      setHeldRoom(cat, room, "place", false);
+      setHeldRoom(cat, room, "place", true);
     };
     var swap = ov.querySelector('[data-se="swap"]');
     if (swap) swap.onclick = function () {
@@ -4326,11 +4339,22 @@
             return;
           }
           if (g.sitesFn === "relief") return;
-          var on = typeof weekendActive !== "undefined" && weekendActive[catId] && weekendActive[catId][room];
-          if (on && occupantOf(catId, room)) {
+          var occ = occupantOf(catId, room);
+          if (occ) {
             openPourSheet(catId, room);
             return;
           }
+          var on = true;
+          try {
+            if (typeof catEditState !== "undefined" && catEditState[catId] && catEditState[catId].deletedRooms) {
+              on = !catEditState[catId].deletedRooms.has(room);
+            }
+          } catch (e) {}
+          try { applyRoomActive(catId, room, !on); } catch (e2) {
+            try { if (on) deactivateRoomNow(catId, room); } catch (e3) {}
+          }
+          persistStaff();
+          return;
         }
         origToggle.apply(this, arguments);
         paintWkndStaff();
@@ -5457,6 +5481,15 @@
         ".sites-fn-tab.on{background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;border-color:#7A4E2D;}" +
         ".sites-fn-hint{font-size:12px;color:#7A4E2D;line-height:1.45;margin:0 0 8px;}" +
         ".sites-sheet-overlay{position:fixed;inset:0;background:rgba(30,14,4,.55);z-index:860;display:flex;align-items:center;justify-content:center;padding:16px;}" +
+        ".deact-sheet-overlay{position:fixed;inset:0;background:rgba(30,14,4,.55);z-index:880;display:flex;align-items:flex-end;justify-content:center;padding:16px;}" +
+        ".deact-sheet{background:#fff;border-radius:18px 18px 12px 12px;padding:16px 16px 18px;width:100%;max-width:420px;color:#1E0E04;box-shadow:0 16px 48px rgba(30,14,4,.22);}" +
+        ".deact-kicker{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#C8781A;margin:0 0 6px;}" +
+        ".deact-who{font-size:16px;font-weight:800;margin:0 0 8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}" +
+        ".deact-ask{font-size:13px;color:#7A4E2D;margin:0 0 12px;}" +
+        ".deact-choice{width:100%;display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;padding:12px 14px;margin:0 0 8px;border-radius:12px;border:1.5px solid rgba(160,98,42,.22);background:#FDF6EC;color:#1E0E04;cursor:pointer;font:inherit;}" +
+        ".deact-choice-title{font-size:14px;font-weight:800;color:#1E0E04;}" +
+        ".deact-choice-sub{font-size:12px;font-weight:600;color:#7A4E2D;}" +
+        ".deact-cancel{width:100%;padding:12px;border:none;border-radius:12px;background:#F3EDE6;color:#7A4E2D;font-size:14px;font-weight:800;cursor:pointer;font:inherit;}" +
         ".sites-sheet-card{background:#fff;border-radius:16px;padding:16px 14px 14px;width:100%;max-width:380px;max-height:86vh;overflow-y:auto;-webkit-overflow-scrolling:touch;color:#1E0E04;box-shadow:0 16px 48px rgba(30,14,4,.22);}" +
         ".sites-choice{width:100%;display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;padding:12px 14px;margin:0 0 8px;border-radius:12px;border:1.5px solid rgba(160,98,42,.22);background:#FDF6EC;color:#1E0E04;cursor:pointer;font:inherit;}" +
         ".sites-choice strong{font-size:15px;color:#1E0E04;}" +
@@ -5623,6 +5656,16 @@
   g.chipName = chipName;
   g.lastName = lastName;
   g.nameKey = nameKey;
+  g.sendOccupantToDeck = sendOccupantToDeck;
+  g.closeRoomIfEmpty = closeRoomIfEmpty;
+  g.plantHeldInto = plantHeldInto;
+  g.setHeldRoom = setHeldRoom;
+  g.finishPlant = finishPlant;
+  g.askOccupiedPlant = askOccupiedPlant;
+  g.clearHeld = clearHeld;
+  g.heldFrom = heldFrom;
+  g.occupantOf = occupantOf;
+  g.roomIsActive = roomIsActive;
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () { ensureUploadUi(); wrapDeactivate(); wrapSitesModal(); installAppTapGuard(); installSheetDismiss(); });
