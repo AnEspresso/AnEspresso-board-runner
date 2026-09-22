@@ -1353,7 +1353,7 @@
     var size = nm.length > 10 ? " tiny" : nm.length > 7 ? " long" : "";
     var gone = !stillInHouse(rec.shift);
     var start = rec.firstCase ? '<span class="staff-last">' + rec.firstCase + "</span>" : "";
-    return '<span class="staff-line">' + shiftPillHtml(rec.shift) + '<span class="staff-name' + size + (gone ? " gone" : "") + '">' + nm + "</span>" + studentMark(hasStudent(rec)) + start + "</span>";
+    return '<span class="staff-line staff-move" data-staff-cat="' + catId + '" data-staff-room="' + String(room).replace(/"/g, "") + '">' + shiftPillHtml(rec.shift) + '<span class="staff-name' + size + (gone ? " gone" : "") + '">' + nm + "</span>" + studentMark(hasStudent(rec)) + start + "</span>";
   }
 
   function roomBreakKind(catId, room) {
@@ -2041,13 +2041,16 @@
         (open ? '<div class="ondeck-grid ondeck-out-grid">' + goneChips + "</div>" : "")
       : "";
     var canMove = canMoveStaff();
+    var held = heldFrom();
     var hint = !canMove
       ? ""
-      : g.fillTarget
-      ? '<div class="ondeck-hint">Tap who goes in ' + g.fillTarget.room + "</div>"
-      : (sel
-        ? '<div class="ondeck-hint">Tap a room to place them · tap the chip again to cancel</div>'
-        : '<div class="ondeck-hint">Longest idle first · tap someone, then tap a room</div>');
+      : (g.moveHint
+        ? '<div class="ondeck-hint">' + g.moveHint + "</div>"
+        : (g.fillTarget
+          ? '<div class="ondeck-hint">Tap who goes in ' + g.fillTarget.room + "</div>"
+          : (sel
+            ? '<div class="ondeck-hint">Tap a room to place them · tap the chip again to cancel</div>'
+            : '<div class="ondeck-hint">Longest idle first · tap someone, then tap a room</div>')));
     card.innerHTML =
       '<div class="cat-header-row"><div class="cup-indicator">☕</div><div class="cat-info">' +
       '<div class="cat-name">On deck</div>' +
@@ -2069,7 +2072,7 @@
         g.deckOutOpen = !g.deckOutOpen;
         if (!g.deckOutOpen && sel && inBucket(gone, sel)) g.selectedDeck = null;
       }
-      document.body.classList.toggle("assigning", !!g.selectedDeck);
+      document.body.classList.toggle("assigning", !!(g.selectedDeck || g.heldMove));
       renderOnDeck();
     }
     if (!canMove) {
@@ -2088,8 +2091,9 @@
           assignSelectedTo(tgt.cat, tgt.room);
           return;
         }
+        g.heldMove = null;
         g.selectedDeck = g.selectedDeck === k ? null : k;
-        document.body.classList.toggle("assigning", !!g.selectedDeck);
+        document.body.classList.toggle("assigning", !!(g.selectedDeck || g.heldMove));
         renderOnDeck();
         renderShiftChange();
       };
@@ -2101,7 +2105,7 @@
         toggleFold(el.getAttribute("data-fold"));
       };
     });
-    document.body.classList.toggle("assigning", !!g.selectedDeck);
+    document.body.classList.toggle("assigning", !!(g.selectedDeck || g.heldMove));
   }
 
   function rememberClose(catId, room, rec) {
@@ -2188,43 +2192,236 @@
     renderOnDeck();
   }
 
+  function cloneStaffRec(rec) {
+    if (!rec) return { name: "", shift: "", kind: "none", closed: false };
+    return {
+      name: rec.name, shift: rec.shift || "", kind: rec.kind || "none",
+      closed: false, student: !!rec.student, firstCase: rec.firstCase || "",
+      early: !!rec.early, orient: !!rec.orient
+    };
+  }
+
+  function heldFrom() {
+    if (g.heldMove && g.heldMove.cat && g.heldMove.room) {
+      return {
+        kind: "room", cat: g.heldMove.cat, room: g.heldMove.room,
+        intent: g.heldMove.intent || "place", closeFrom: !!g.heldMove.closeFrom
+      };
+    }
+    if (g.selectedDeck) return { kind: "deck", key: g.selectedDeck, intent: "place" };
+    return null;
+  }
+
+  function clearHeld() {
+    g.selectedDeck = null;
+    g.heldMove = null;
+    g.moveHint = "";
+    try { document.body.classList.remove("assigning"); } catch (e) {}
+    refreshMoveHints();
+  }
+
+  function refreshMoveHints() {
+    var desk = document.querySelector("#weekend-overlay.show .sites-fn-hint");
+    if (desk && g.sitesFn === "rooms") {
+      desk.textContent = g.moveHint || "Tap a room to open or close it. Closing a staffed room asks where they go. Tap a name to move them.";
+    }
+  }
+
+  function setHeldRoom(cat, room, intent, closeFrom) {
+    g.selectedDeck = null;
+    g.heldMove = { cat: cat, room: room, intent: intent || "place", closeFrom: !!closeFrom };
+    var rec = occupantOf(cat, room);
+    var nm = rec ? chipName(rec.name) : "them";
+    g.moveHint = intent === "swap"
+      ? "Tap the room " + nm + " swaps with · tap " + room + " to cancel"
+      : "Tap the room " + nm + " moves to · tap " + room + " to cancel";
+    try { document.body.classList.add("assigning"); } catch (e) {}
+    if (g.sitesFn === "people") {
+      g.sitesFn = "rooms";
+      try { if (typeof enhanceEditDayModal === "function") enhanceEditDayModal(true); } catch (e) {}
+    }
+    try { if (typeof showToast === "function") showToast(g.moveHint); } catch (e) {}
+    renderOnDeck();
+    refreshMoveHints();
+  }
+
+  function sendRecToDeck(rec, lastRoom, select) {
+    if (!rec || !rec.name) return;
+    g.onDeck = g.onDeck || [];
+    var k = nameKey(rec.name);
+    g.onDeck = g.onDeck.filter(function (p) { return nameKey(p.name) !== k; });
+    g.onDeck.unshift({
+      name: rec.name, shift: rec.shift || "", kind: rec.kind || "none",
+      lastRoom: lastRoom || "", role: "freed", student: !!rec.student,
+      firstCase: rec.firstCase || "", freedAt: Date.now()
+    });
+    if (select) {
+      g.selectedDeck = k;
+      g.heldMove = null;
+      g.moveHint = "Tap a room to place " + chipName(rec.name);
+      try { document.body.classList.add("assigning"); } catch (e) {}
+    }
+  }
+
+  function afterStaffMove() {
+    persistStaff();
+    try { if (typeof updateActivePOCCounter === "function") updateActivePOCCounter(); } catch (e) {}
+    refreshMoveHints();
+  }
+
+  function finishPlant(held, toCat, toRoom, how) {
+    if (!held || !toCat || !toRoom) return false;
+    g.roomStaff = g.roomStaff || {};
+    g.roomStaff[toCat] = g.roomStaff[toCat] || {};
+    var occ = occupantOf(toCat, toRoom);
+    var mover = null;
+    var moverName = "";
+    if (held.kind === "deck") {
+      var list = g.onDeck || [];
+      var idx = -1;
+      for (var i = 0; i < list.length; i++) {
+        if (nameKey(list[i].name) === held.key) { idx = i; break; }
+      }
+      if (idx < 0) { clearHeld(); return false; }
+      mover = list[idx];
+      moverName = mover.name;
+      list.splice(idx, 1);
+      if (how === "swap" && occ) sendRecToDeck(occ, toRoom, true);
+      else if (how === "bump" && occ) sendRecToDeck(occ, toRoom, false);
+      g.roomStaff[toCat][toRoom] = cloneStaffRec(mover);
+    } else {
+      mover = occupantOf(held.cat, held.room);
+      if (!mover) { clearHeld(); return false; }
+      moverName = mover.name;
+      if (how === "swap" && occ) {
+        var a = cloneStaffRec(mover);
+        var b = cloneStaffRec(occ);
+        g.roomStaff[held.cat] = g.roomStaff[held.cat] || {};
+        g.roomStaff[held.cat][held.room] = b;
+        g.roomStaff[toCat][toRoom] = a;
+        try {
+          if (typeof catEditState !== "undefined") {
+            if (catEditState[held.cat]) catEditState[held.cat].deletedRooms.delete(held.room);
+            if (catEditState[toCat]) catEditState[toCat].deletedRooms.delete(toRoom);
+          }
+        } catch (e) {}
+        var keep = how === "swap" && held.kind === "deck";
+        if (!keep) clearHeld();
+        afterStaffMove();
+        try { if (typeof showToast === "function") showToast(chipName(a.name) + " ↔ " + chipName(b.name)); } catch (e2) {}
+        return true;
+      }
+      if (how === "bump" && occ) sendRecToDeck(occ, toRoom, false);
+      g.roomStaff[toCat][toRoom] = cloneStaffRec(mover);
+      g.roomStaff[held.cat] = g.roomStaff[held.cat] || {};
+      g.roomStaff[held.cat][held.room] = { name: "", shift: "", kind: "none", closed: false };
+      if (held.closeFrom) {
+        try { deactivateRoomNow(held.cat, held.room); } catch (e3) {}
+      }
+    }
+    try {
+      if (typeof catEditState !== "undefined" && catEditState[toCat]) {
+        catEditState[toCat].deletedRooms.delete(toRoom);
+        if (catEditState[toCat].deletedEvents) catEditState[toCat].deletedEvents[toRoom] = { deleted: false, ts: Date.now() };
+      }
+    } catch (e) {}
+    var keepHand = how === "swap" && held.kind === "deck" && occ;
+    if (!keepHand) clearHeld();
+    else {
+      g.heldMove = null;
+    }
+    afterStaffMove();
+    try {
+      if (typeof showToast === "function") {
+        if (keepHand) showToast(chipName(moverName) + " → " + toRoom + " · place " + chipName(occ.name) + " next");
+        else showToast(chipName(moverName) + " → " + toRoom);
+      }
+    } catch (e4) {}
+    return true;
+  }
+
+  function closePlantAsk() {
+    var ov = document.getElementById("plant-ask-overlay");
+    if (ov) ov.remove();
+  }
+
+  function askOccupiedPlant(held, toCat, toRoom) {
+    var occ = occupantOf(toCat, toRoom);
+    var mover = held.kind === "deck"
+      ? (g.onDeck || []).filter(function (p) { return nameKey(p.name) === held.key; })[0]
+      : occupantOf(held.cat, held.room);
+    if (!occ || !mover) return false;
+    closePlantAsk();
+    var ov = document.createElement("div");
+    ov.id = "plant-ask-overlay";
+    ov.className = "deact-sheet-overlay";
+    var swapTitle = held.kind === "deck"
+      ? "Swap — " + chipName(mover.name) + " in " + toRoom + ", keep " + chipName(occ.name) + " in your hand"
+      : "Swap — they trade rooms";
+    var swapSub = held.kind === "deck"
+      ? chipName(occ.name) + " stays selected so you can tap the next room"
+      : chipName(mover.name) + " ↔ " + chipName(occ.name);
+    ov.innerHTML =
+      '<div class="deact-sheet">' +
+      '<div class="deact-kicker">' + toRoom + " is staffed</div>" +
+      '<div class="deact-who">' + shiftPillHtml(mover.shift) + '<span class="staff-name">' + chipName(mover.name) + "</span>" +
+      '<span class="staff-last">→ ' + toRoom + "</span></div>" +
+      '<div class="deact-ask">Now: ' + shiftPillHtml(occ.shift) + " " + chipName(occ.name) + "</div>" +
+      '<button type="button" class="deact-choice" data-act="swap"><span class="deact-choice-title">' + swapTitle + '</span><span class="deact-choice-sub">' + swapSub + '</span></button>' +
+      '<button type="button" class="deact-choice" data-act="bump"><span class="deact-choice-title">Bump ' + chipName(occ.name) + ' to deck</span><span class="deact-choice-sub">' + chipName(mover.name) + ' in ' + toRoom + ' · ' + chipName(occ.name) + ' free</span></button>' +
+      '<button type="button" class="deact-cancel" data-act="cancel">Cancel</button></div>';
+    ov.addEventListener("click", function (e) { if (e.target === ov) closePlantAsk(); });
+    ov.querySelector('[data-act="cancel"]').onclick = closePlantAsk;
+    ov.querySelector('[data-act="swap"]').onclick = function () {
+      closePlantAsk();
+      finishPlant(held, toCat, toRoom, "swap");
+    };
+    ov.querySelector('[data-act="bump"]').onclick = function () {
+      closePlantAsk();
+      finishPlant(held, toCat, toRoom, "bump");
+    };
+    document.body.appendChild(ov);
+    return true;
+  }
+
+  function plantHeldInto(toCat, toRoom) {
+    var held = heldFrom();
+    if (!held) return false;
+    if (held.kind === "room" && held.cat === toCat && held.room === toRoom) {
+      clearHeld();
+      try { if (typeof showToast === "function") showToast("Cancelled"); } catch (e) {}
+      renderOnDeck();
+      return true;
+    }
+    var occ = occupantOf(toCat, toRoom);
+    if (held.intent === "swap") {
+      if (!occ) return finishPlant(held, toCat, toRoom, "empty");
+      return finishPlant(held, toCat, toRoom, "swap");
+    }
+    if (occ) return askOccupiedPlant(held, toCat, toRoom);
+    return finishPlant(held, toCat, toRoom, "empty");
+  }
+
+  function tryHandleRoomTap(catId, room, ev) {
+    if (!canMoveStaff()) return false;
+    if (heldFrom()) return plantHeldInto(catId, room);
+    var t = ev && ev.target;
+    if (t && t.closest && t.closest(".staff-move")) {
+      if (ev.preventDefault) ev.preventDefault();
+      if (ev.stopPropagation) ev.stopPropagation();
+      openPersonSheet("room", "", catId, room);
+      return true;
+    }
+    return false;
+  }
+
   function assignSelectedTo(catId, room) {
     if (!canMoveStaff()) {
-      g.selectedDeck = null;
-      try { document.body.classList.remove("assigning"); } catch (e) {}
+      clearHeld();
       return false;
     }
-    var key = g.selectedDeck;
-    if (!key || !catId || !room) return false;
-    var list = g.onDeck || [];
-    var idx = -1;
-    for (var i = 0; i < list.length; i++) {
-      if (nameKey(list[i].name) === key) { idx = i; break; }
-    }
-    if (idx < 0) { g.selectedDeck = null; return false; }
-    var person = list[idx];
-    g.roomStaff = g.roomStaff || {};
-    g.roomStaff[catId] = g.roomStaff[catId] || {};
-    var occ = g.roomStaff[catId][room];
-    list.splice(idx, 1);
-    if (occ && occ.name) {
-      list.unshift({
-        name: occ.name, shift: occ.shift || "", kind: occ.kind || "none",
-        lastRoom: room, role: "freed", student: !!occ.student, freedAt: Date.now()
-      });
-    }
-    g.roomStaff[catId][room] = { name: person.name, shift: person.shift || "", kind: person.kind || "none", closed: false, student: !!person.student };
-    if (typeof catEditState !== "undefined" && catEditState[catId]) {
-      catEditState[catId].deletedRooms.delete(room);
-    }
-    g.selectedDeck = null;
-    document.body.classList.remove("assigning");
-    publishStaff();
-    try { if (typeof saveShared === "function") saveShared(); } catch (e) {}
-    try { if (typeof refreshBoard === "function") refreshBoard(); } catch (e) {}
-    renderOnDeck();
-    try { if (typeof showToast === "function") showToast(chipName(person.name) + " → " + room); } catch (e) {}
-    return true;
+    if (!g.selectedDeck && !g.heldMove) return false;
+    return plantHeldInto(catId, room);
   }
 
   function roomIsActive(catId, room) {
@@ -2746,19 +2943,13 @@
   }
 
   function pickStaff(from, fromCat, fromRoom, fromKey, toCat, toRoom) {
-    var moved = moveStaffToRoom(
-      from === "deck" ? { kind: "deck", key: fromKey } : { kind: "room", cat: fromCat, room: fromRoom },
-      toCat, toRoom, false
-    );
+    var held = from === "deck"
+      ? { kind: "deck", key: fromKey, intent: "place" }
+      : { kind: "room", cat: fromCat, room: fromRoom, intent: "place" };
     closeReliefRoster();
-    if (!moved) return;
-    if (typeof weekendActive !== "undefined" && weekendActive[toCat]) weekendActive[toCat][toRoom] = true;
-    try { if (typeof saveShared === "function") saveShared(); } catch (e) {}
-    try { if (typeof refreshBoard === "function") refreshBoard(); } catch (e) {}
-    renderOnDeck();
-    renderShiftChange();
-    paintEditDayButtons();
-    try { if (typeof showToast === "function") showToast("Staffed " + toRoom); } catch (e) {}
+    var occ = occupantOf(toCat, toRoom);
+    if (occ) { askOccupiedPlant(held, toCat, toRoom); return; }
+    finishPlant(held, toCat, toRoom, "empty");
   }
 
   g.editSitesMode = g.editSitesMode || "rooms";
@@ -2879,21 +3070,17 @@
       paintEditDayButtons();
       return;
     }
-    var moved = moveStaffToRoom({ kind: "room", cat: src.cat, room: src.room }, toCat, toRoom, true);
+    var held = { kind: "room", cat: src.cat, room: src.room, closeFrom: true, intent: "place" };
     g.pendingPour = null;
     setEditSitesHint("");
-    if (moved) {
-      applyRoomActive(src.cat, src.room, false);
-      applyRoomActive(toCat, toRoom, true);
+    var occ = occupantOf(toCat, toRoom);
+    if (occ) {
+      askOccupiedPlant(held, toCat, toRoom);
+      paintEditDayButtons();
+      return;
     }
-    try { if (typeof saveShared === "function") saveShared(); } catch (e) {}
-    try { if (typeof refreshBoard === "function") refreshBoard(); } catch (e) {}
-    renderOnDeck();
-    renderShiftChange();
+    finishPlant(held, toCat, toRoom, "empty");
     paintEditDayButtons();
-    try {
-      if (typeof showToast === "function") showToast(chipName(src.name) + " · " + src.room + " → " + toRoom);
-    } catch (e) {}
   }
 
   function openDeactSheet(catId, room) {
@@ -3103,9 +3290,9 @@
       return '<button type="button" class="sites-fn-tab' + (fn === id ? " on" : "") + '" data-sitesfn="' + id + '">' + label + "</button>";
     }
     var hint =
-      fn === "people" ? "Search or tap a name to change shift or take them off. Free now is longest-idle first."
+      fn === "people" ? "Search a name, then send them to deck, move, or swap. Free now is longest-idle first."
       : fn === "relief" ? "Next wave is open. Later hours and doctors are folded. Late stays show once with LS #."
-      : "Tap a room to open or close it. Closing a staffed room asks where they go.";
+      : "Tap a room to open or close it. Closing a staffed room asks where they go. Tap a name to move them.";
     var viewBtn = (g.lastSheet && g.lastSheet.cells) || (g.assignmentMeta && g.assignmentMeta.cells)
       ? '<button type="button" class="desk-upload-btn" id="desk-view-sheet">View uploaded sheet</button>'
       : "";
@@ -3708,14 +3895,11 @@
       el.onclick = function () {
         var toCat = el.getAttribute("data-icat");
         var toRoom = el.getAttribute("data-iroom");
-        moveStaffToRoom({ kind: "room", cat: fromCat, room: fromRoom }, toCat, toRoom, true);
-        deactivateRoomNow(fromCat, fromRoom);
+        var held = { kind: "room", cat: fromCat, room: fromRoom, closeFrom: true, intent: "place" };
+        var occ = occupantOf(toCat, toRoom);
         closeSitesSheet();
-        try { if (typeof saveShared === "function") saveShared(); } catch (e) {}
-        try { if (typeof refreshBoard === "function") refreshBoard(); } catch (e) {}
-        paintWkndStaff();
-        renderOnDeck();
-        renderShiftChange();
+        if (occ) { askOccupiedPlant(held, toCat, toRoom); return; }
+        finishPlant(held, toCat, toRoom, "empty");
       };
     });
   }
@@ -3806,19 +3990,13 @@
         el.onclick = function (ev) {
           ev.stopPropagation();
           var from = el.getAttribute("data-rfrom");
-          var ok = moveStaffToRoom(
-            from === "deck"
-              ? { kind: "deck", key: el.getAttribute("data-rkey") }
-              : { kind: "room", cat: el.getAttribute("data-rcat"), room: el.getAttribute("data-rroom") },
-            cat, room, false
-          );
-          if (!ok) return;
+          var held = from === "deck"
+            ? { kind: "deck", key: el.getAttribute("data-rkey"), intent: "place" }
+            : { kind: "room", cat: el.getAttribute("data-rcat"), room: el.getAttribute("data-rroom"), intent: "place" };
           closeSitesSheet();
-          try { if (typeof saveShared === "function") saveShared(); } catch (e) {}
-          try { if (typeof refreshBoard === "function") refreshBoard(); } catch (e) {}
-          paintWkndStaff();
-          renderOnDeck();
-          renderShiftChange();
+          var occ = occupantOf(cat, room);
+          if (occ) { askOccupiedPlant(held, cat, room); return; }
+          finishPlant(held, cat, room, "empty");
         };
       });
     }
@@ -3913,7 +4091,7 @@
       var t = e.target;
       if (!t || !t.closest) return;
       if (t.closest("input, textarea, select, label")) return;
-      if (t.closest("#assign-upload-overlay, .assign-upload-overlay, .assign-apply, .assign-cancel, #remove-staff-overlay, #sites-sheet-overlay, #force-update-overlay, .sheet-handle, [data-fold], .ondeck-out-toggle, .relief-wave-toggle")) return;
+      if (t.closest("#assign-upload-overlay, .assign-upload-overlay, .assign-apply, .assign-cancel, #remove-staff-overlay, #sites-sheet-overlay, #force-update-overlay, #plant-ask-overlay, .sheet-handle, [data-fold], .ondeck-out-toggle, .relief-wave-toggle")) return;
       var ctrl = typeof closestControl === "function" ? closestControl(t) : t.closest("button, .room-btn, .roster-pill, .relief-need, .sites-fn-tab, .weekend-room-btn");
       if (!ctrl) return;
       var strict = !!t.closest(".ondeck-drop, [data-act='yes'], [data-se='noshow']");
@@ -3962,12 +4140,23 @@
     var ov = document.createElement("div");
     ov.id = "sites-sheet-overlay";
     ov.className = "sites-sheet-overlay";
+    var moves = "";
+    if (canMoveStaff()) {
+      if (kind === "deck") {
+        moves += '<button type="button" class="sites-choice" data-se="place"><strong>Place in a room</strong><span>Tap a room next — occupied rooms will ask swap or bump</span></button>';
+      } else {
+        moves += '<button type="button" class="sites-choice" data-se="deck"><strong>Send to deck</strong><span>Free — ready for breaks or relief</span></button>';
+        moves += '<button type="button" class="sites-choice" data-se="move"><strong>Move to a room</strong><span>They stay assigned — tap the next OR</span></button>';
+        moves += '<button type="button" class="sites-choice" data-se="swap"><strong>Swap with another room</strong><span>Tap the room they trade with</span></button>';
+      }
+    }
     ov.innerHTML =
       '<div class="sites-sheet-card">' +
       '<div class="relief-roster-title">' + chipName(rec.name) + "</div>" +
       '<div class="relief-roster-sub">' + shiftPillHtml(rec.shift) +
       (kind === "deck" ? '<span class="staff-last">on deck</span>' : '<span class="roster-loc">' + room + "</span>") +
       "</div>" +
+      moves +
       '<div class="sites-sheet-lead">Change shift — stay later or go home earlier</div>' +
       '<div class="shift-pick">' + SHIFT_LETTERS.map(function (l) {
         var on = coreShift(rec.shift) === l ? " on" : "";
@@ -3981,6 +4170,38 @@
     ov.querySelectorAll("[data-sh]").forEach(function (b) {
       b.onclick = function () { applyShiftAnywhere(kind, key, cat, room, b.getAttribute("data-sh")); };
     });
+    var place = ov.querySelector('[data-se="place"]');
+    if (place) place.onclick = function () {
+      closeSitesSheet();
+      g.heldMove = null;
+      g.selectedDeck = key;
+      g.moveHint = "Tap a room to place " + chipName(rec.name);
+      try { document.body.classList.add("assigning"); } catch (e) {}
+      if (g.sitesFn === "people") {
+        g.sitesFn = "rooms";
+        try { if (typeof enhanceEditDayModal === "function") enhanceEditDayModal(true); } catch (e) {}
+      }
+      renderOnDeck();
+      refreshMoveHints();
+      try { if (typeof showToast === "function") showToast(g.moveHint); } catch (e) {}
+    };
+    var toDeck = ov.querySelector('[data-se="deck"]');
+    if (toDeck) toDeck.onclick = function () {
+      closeSitesSheet();
+      pushOnDeckFromRoom(cat, room);
+      persistStaff();
+      try { if (typeof showToast === "function") showToast(chipName(rec.name) + " → on deck"); } catch (e) {}
+    };
+    var move = ov.querySelector('[data-se="move"]');
+    if (move) move.onclick = function () {
+      closeSitesSheet();
+      setHeldRoom(cat, room, "place", false);
+    };
+    var swap = ov.querySelector('[data-se="swap"]');
+    if (swap) swap.onclick = function () {
+      closeSitesSheet();
+      setHeldRoom(cat, room, "swap", false);
+    };
     ov.querySelector('[data-se="remove"]').onclick = function () {
       if (kind === "deck") confirmRemoveStaff(rec.name, function () { dropFromDeck(key); closeSitesSheet(); renderDeskPeople(); });
       else removeOccupant(cat, room);
@@ -4096,7 +4317,9 @@
     }
     if (typeof weekendToggleRoom === "function") {
       var origToggle = weekendToggleRoom;
-      window.weekendToggleRoom = function (catId, room, btn) {
+      window.weekendToggleRoom = function (catId, room, btn, ev) {
+        ev = ev || (typeof window !== "undefined" ? window.event : null);
+        if (tryHandleRoomTap(catId, room, ev)) return;
         if (isEditDayModal() || (document.getElementById("weekend-day-badge") || {}).textContent === "Active Sites") {
           if (g.sitesFn === "staffing" || g.sitesFn === "people") {
             openStaffingSheet(catId, room);
@@ -4194,7 +4417,7 @@
       g._deckWrapped = true;
       var orig = toggleDeleteRoom;
       window.toggleDeleteRoom = function (catId, room) {
-        if (g.selectedDeck && assignSelectedTo(catId, room)) return;
+        if (heldFrom() && assignSelectedTo(catId, room)) return;
         var was = typeof catEditState !== "undefined" && catEditState[catId] && catEditState[catId].deletedRooms.has(room);
         orig.apply(this, arguments);
         var now = typeof catEditState !== "undefined" && catEditState[catId] && catEditState[catId].deletedRooms.has(room);
@@ -4206,7 +4429,7 @@
       g._toggleRoomWrapped = true;
       var origToggle = toggleRoom;
       window.toggleRoom = function (catId, room, ev) {
-        if (g.selectedDeck && assignSelectedTo(catId, room)) return;
+        if (tryHandleRoomTap(catId, room, ev)) return;
         return origToggle.apply(this, arguments);
       };
     }
@@ -5142,7 +5365,9 @@
         ".staff-last{font-size:10px;font-weight:500;color:#9A6A38;}" +
         ".staff-last::before{content:'·';margin:0 3px;color:rgba(122,78,45,.45);}" +
         ".ondeck-hint{padding:0 12px 6px;font-size:11px;color:#9A6A38;}" +
-        "body.assigning .room-btn{box-shadow:inset 0 0 0 1.5px rgba(122,78,45,.35);}" +
+        "body.assigning .room-btn,body.assigning .weekend-room-btn{box-shadow:inset 0 0 0 1.5px rgba(122,78,45,.35);}" +
+        ".staff-move{position:relative;z-index:2;padding:1px 3px;border-radius:8px;}" +
+        "body.assigning .staff-move{pointer-events:none;}" +
         "#late-board-bar{display:none;padding:8px 14px 10px;background:transparent;border-bottom:none;font-size:12px;color:#1E0E04;}" +
         "#late-board-bar .late-board-title{font-weight:800;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#7A4E2D;margin-bottom:4px;}" +
         "#late-board-bar .late-board-row{margin:2px 0;line-height:1.35;}" +
