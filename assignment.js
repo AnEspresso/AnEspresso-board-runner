@@ -138,6 +138,18 @@
     return parseInt(m[1], 10) + ":" + m[2];
   }
 
+  function extractRoomTime(s) {
+    var fromAt = extractFirstCase(s);
+    if (fromAt) return fromAt;
+    var m = String(s || "").trim().match(/\s+(?:@\s*)?(?:0?(\d{1,2})[:.](\d{2})|0?([6-9]\d{2}|1[0-2]\d{2}))\s*$/);
+    if (!m) return "";
+    if (m[1]) return parseInt(m[1], 10) + ":" + m[2];
+    var d = String(m[3] || "");
+    if (d.length === 3) return d.charAt(0) + ":" + d.slice(1);
+    if (d.length === 4) return parseInt(d.slice(0, 2), 10) + ":" + d.slice(2);
+    return "";
+  }
+
   function cleanName(s) {
     s = String(s || "").replace(/\*/g, " ");
     s = s.replace(/\s*\+.*$/, "");
@@ -356,6 +368,17 @@
     return /^(NORTH TOWER|SOUTH TOWER|OFFSITE|FBC|M\/N|STE\.?\s*100|WBF|ENDO A|ENDO B|RESOURCE STAFF|POC TESTING|CCS POC|2N POC|2S POC|STE POC|OB POC|CHECK HEMACUE|TRAUMA RM|SHIFT|CRNA|ASSIGNMENTS?|MIDNIGHT|LATE STAY|MN CALL|HEART CALL|NT BREAKERS|ST BREAKERS|POS|CV|3N|2N|ST 1|ST 2|STE 1|STE 2|CCS|ENDO|EP|OB)$/i.test(t);
   }
 
+  function deckRoleForUnknown(roomRaw) {
+    var t = String(roomRaw || "").replace(/\s+/g, " ").trim();
+    if (!t) return null;
+    if (/^OB\s*(RESIDENT|RES)\b/i.test(t) || /^(OB\s*)?SRNA(\s*OB)?$/i.test(t) || /SRNA\s*OB/i.test(t)) {
+      return { role: "resident", last: "OB" };
+    }
+    if (/^EVES?$/i.test(t)) return { role: "evening", last: "Eves" };
+    if (isTimeLabel(t)) return { role: "night", last: t };
+    return null;
+  }
+
   function parseShiftLabel(s) {
     var t = String(s || "").replace(/\s+/g, "").trim();
     var m = t.match(/^(o\/)?(\*?)([DdMmSsQqWwEeNnTt](?:\/[DdMmSsQqWwEeNnTt])?)(\*?)$/);
@@ -389,6 +412,7 @@
     su = su.replace(/@\s*3\s*P.*/i, "").trim();
     su = su.replace(/^IR\s*(\d+).*/, "IR $1");
     su = su.replace(/^BMBX?\d*.*/, "BMB");
+    su = su.replace(/^CATH(?:ETER)?\s*LAB(?:ORATORY)?(?:\s*\d+)?$/, "CATH LAB");
     su = su.replace(/^CT\b.*/, "CT");
     su = su.replace("OR39/40", "OR 38-39").replace("OR 39/40", "OR 38-39");
     if (/^MRI IC$/i.test(su)) su = "MRI IC 1";
@@ -461,6 +485,49 @@
 
   function nameKey(n) {
     return String(n || "").toLowerCase().replace(/[^a-z]/g, "");
+  }
+
+  function deckRoleRank(role) {
+    return ({
+      breaker: 50, wbf: 40, call: 30, midnight: 25,
+      evening: 22, resident: 22, night: 20, latestay: 15,
+      extra: 10, offsite: 10, unplaced: 1, shift: 1
+    }[role] || 0);
+  }
+
+  function mergeDeckPeople(list) {
+    var by = {};
+    var order = [];
+    (list || []).forEach(function (p) {
+      if (!p || !p.name) return;
+      var k = nameKey(p.name);
+      if (!by[k]) {
+        by[k] = {
+          name: p.name, shift: p.shift || "", kind: p.kind || "none",
+          lastRoom: p.lastRoom || "", role: p.role || "",
+          intended: p.intended || "", student: !!p.student, firstCase: p.firstCase || ""
+        };
+        order.push(k);
+        return;
+      }
+      var cur = by[k];
+      if (deckRoleRank(p.role) > deckRoleRank(cur.role)) {
+        if (!p.shift && cur.shift) p = Object.assign({}, p, { shift: cur.shift, kind: p.kind || cur.kind });
+        if (!p.intended && cur.intended) p = Object.assign({}, p, { intended: cur.intended });
+        cur.role = p.role || cur.role;
+        cur.lastRoom = p.lastRoom || cur.lastRoom;
+        cur.shift = p.shift || cur.shift;
+        cur.kind = p.kind || cur.kind || "none";
+        cur.intended = p.intended || cur.intended;
+        cur.student = cur.student || !!p.student;
+        cur.firstCase = cur.firstCase || p.firstCase || "";
+      } else {
+        if (!cur.shift && p.shift) { cur.shift = p.shift; cur.kind = p.kind || cur.kind; }
+        if (!cur.intended && p.intended) cur.intended = p.intended;
+        cur.student = cur.student || !!p.student;
+      }
+    });
+    return order.map(function (k) { return by[k]; });
   }
 
   function shiftEndHour(shift) {
@@ -625,6 +692,7 @@
     var unmatched = [];
     var closed = [];
     var onDeck = [];
+    var calls = [];
     var filled = {};
     var mriIcN = 0;
     var unsure = [];
@@ -668,10 +736,13 @@
       if (!st || !st.name || st.closed) return;
       if (isJunkStaff(st.name, st.shift)) return;
       if (/^\d{3,4}\s*-\s*\d/.test(st.name) || /^2200/.test(st.name)) return;
+      var intended = "";
+      if (role === "extra" || role === "offsite") intended = lastRoom || "";
+      if (role === "wbf" && lastRoom && !/^WBF$/i.test(lastRoom)) intended = lastRoom;
       onDeck.push({
         name: st.name, shift: st.shift || "", kind: st.kind || "none",
         lastRoom: lastRoom || "", role: role || "",
-        intended: (role === "extra" || role === "offsite") ? (lastRoom || "") : "",
+        intended: intended,
         student: !!st.student, firstCase: st.firstCase || ""
       });
     }
@@ -695,8 +766,10 @@
         if (loc) locs.push(loc);
       });
       if (!locs.length) {
+        if (st && st.closed) return;
         if (st && st.name && !st.closed && !isJunkStaff(st.name, st.shift)) {
           var shiftLab = parseShiftLabel(roomRaw);
+          var deckGuess = deckRoleForUnknown(roomRaw);
           if (shiftLab) {
             if (!st.shift) {
               st.shift = shiftLab.shift;
@@ -718,16 +791,39 @@
               cellRefs: refs
             });
             recordPerson(roomRaw, staffRaw, st, [], "shift", refs);
+          } else if (deckGuess) {
+            addDeck(st, deckGuess.last, deckGuess.role);
+            recordPerson(roomRaw, staffRaw, st, [], deckGuess.role, refs);
           } else {
             addDeck(st, roomRaw, "unplaced");
             addUnsure(roomRaw, staffRaw, st, refs);
             recordPerson(roomRaw, staffRaw, st, [], "unplaced", refs);
+            unmatched.push({ room: roomRaw, staff: staffRaw });
           }
+        } else if (!st || !st.closed) {
+          unmatched.push({ room: roomRaw, staff: staffRaw });
         }
-        unmatched.push({ room: roomRaw, staff: staffRaw });
         return;
       }
       if (!st) return;
+      if (st.closed) {
+        locs.forEach(function (loc) {
+          var key = loc.cat + "|" + loc.room;
+          if (filled[key] && filled[key].closed) return;
+          var rec = {
+            cat: loc.cat, room: loc.room, shift: "", name: "",
+            closed: true, kind: "none", early: false, orient: false,
+            student: false, firstCase: ""
+          };
+          if (filled[key]) {
+            rooms = rooms.filter(function (x) { return !(x.cat === loc.cat && x.room === loc.room); });
+          }
+          filled[key] = rec;
+          rooms.push(rec);
+          closed.push({ cat: loc.cat, room: loc.room });
+        });
+        return;
+      }
       if (isJunkStaff(st.name, st.shift)) return;
       var isCombo = labels.length > 1;
       recordPerson(roomRaw, staffRaw, st, locs, isCombo ? "combo" : "", refs);
@@ -742,7 +838,7 @@
         var rec = {
           cat: loc.cat, room: loc.room, shift: st.shift || "", name: st.name || "",
           closed: !!st.closed, kind: st.kind || "none", early: !!st.early, orient: !!st.orient,
-          student: !!st.student, firstCase: st.firstCase || ""
+          student: !!st.student, firstCase: st.firstCase || extractRoomTime(roomRaw) || ""
         };
         if (filled[key]) {
           rooms = rooms.filter(function (x) { return !(x.cat === loc.cat && x.room === loc.room); });
@@ -793,8 +889,8 @@
       if (inWbf) {
         var wst = parseStaff(dRaw);
         if (wst && wst.name && !wst.closed && !isJunkStaff(wst.name, wst.shift)) {
-          addDeck(wst, "WBF", "wbf");
-          recordPerson("WBF", dRaw, wst, [], "wbf", ["C" + r, "D" + r]);
+          addDeck(wst, cRaw, "wbf");
+          recordPerson(cRaw || "WBF", dRaw, wst, [], "wbf", ["C" + r, "D" + r]);
         }
         continue;
       }
@@ -807,6 +903,15 @@
     function addLabelled(raw, lastRoom, role, refs) {
       var st = parseStaff(raw);
       if (st && st.name) {
+        if (role === "call") {
+          var callShift = st.shift || "";
+          if (!callShift) {
+            rooms.forEach(function (x) {
+              if (x.name && nameKey(x.name) === nameKey(st.name) && x.shift) callShift = x.shift;
+            });
+          }
+          calls.push({ name: st.name, shift: callShift, lastRoom: lastRoom || "", role: "call" });
+        }
         addDeck(st, lastRoom, role);
         recordPerson(lastRoom, raw, st, [], role, refs);
       }
@@ -844,6 +949,11 @@
               if (x.name && nameKey(x.name) === nameKey(lst.name) && x.shift) lsShift = x.shift;
             });
           }
+          if (!lsShift) {
+            onDeck.forEach(function (p) {
+              if (p.name && nameKey(p.name) === nameKey(lst.name) && p.shift) lsShift = p.shift;
+            });
+          }
           lateStays.push({
             n: parseInt(num[1], 10),
             name: lst.name,
@@ -870,13 +980,7 @@
       if ((p.role === "midnight" || p.role === "call") && placedDr[k] && coreShift(p.shift) !== "Dr") return true;
       return false;
     });
-    var seen = {};
-    onDeck = onDeck.filter(function (p) {
-      var k = nameKey(p.name);
-      if (seen[k]) return false;
-      seen[k] = 1;
-      return true;
-    });
+    onDeck = mergeDeckPeople(onDeck);
     var pos = {};
     for (r = 36; r <= 41; r++) {
       var lab = cell(cells, "G", r);
@@ -900,7 +1004,8 @@
       kind: "weekday", date: date,
       runners: { nt: ntR && ntR.name, st: stR && stR.name },
       rooms: rooms, closed: closed, unmatched: unmatched, pos: pos, people: [], onDeck: onDeck,
-      lateStays: lateStays, unsure: unsure, preview: preview, sheetPeople: sheetPeople
+      lateStays: lateStays, unsure: unsure, preview: preview, sheetPeople: sheetPeople,
+      calls: calls
     };
   }
 
@@ -1176,12 +1281,19 @@
   }
 
   function deckTag(p) {
-    if (p.role === "wbf") return "WBF";
+    if (p.role === "wbf") {
+      var where = p.intended || p.lastRoom || "";
+      if (!where || /^WBF$/i.test(where)) return "WBF";
+      return "WBF " + String(where).replace(/([A-Za-z])(\d)/g, "$1 $2");
+    }
+    if (p.role === "resident") return p.lastRoom || "OB";
+    if (p.role === "evening") return "eves";
+    if (p.role === "night") return p.lastRoom || "night";
     if (p.role === "shift") return "";
     if (parseShiftLabel(p.lastRoom)) return "";
     if (p.role === "unplaced" && p.lastRoom) return String(p.lastRoom).replace(/([A-Za-z])(\d)/g, "$1 $2");
     if (p.role === "freed" && p.lastRoom) return "last " + p.lastRoom;
-    if (p.role === "breaker") return "breaker";
+    if (p.role === "breaker") return p.lastRoom ? "BR " + p.lastRoom : "breaker";
     if (p.role === "call") return "call";
     if (p.role === "midnight") return "night";
     return "";
@@ -1408,6 +1520,8 @@
         g.assignmentMeta = window.assignmentMeta || null;
         if (g.assignmentMeta && g.assignmentMeta.lateStays) g.lateStays = g.assignmentMeta.lateStays;
         else if (!g.assignmentMeta) g.lateStays = [];
+        if (g.assignmentMeta && g.assignmentMeta.calls) g.calls = g.assignmentMeta.calls;
+        else if (!g.assignmentMeta) g.calls = [];
       }
     } catch (e) {}
   }
@@ -1480,12 +1594,15 @@
         return {
           name: cleanName(p.name), shift: p.shift || "", kind: p.kind || "none",
           lastRoom: p.lastRoom || "", role: p.role || "",
-          intended: p.role === "wbf" ? "" : (p.intended || ((p.role === "extra" || p.role === "offsite") ? (p.lastRoom || "") : "")),
+          intended: p.intended || ((p.role === "extra" || p.role === "offsite") ? (p.lastRoom || "") : ""),
           student: !!p.student, firstCase: p.firstCase || "", freedAt: now
         };
       }).filter(function (p) { return p.name && !isJunkStaff(p.name, p.shift); });
       g.lateStays = (res.lateStays || []).map(function (p) {
         return { n: p.n, name: cleanName(p.name), shift: p.shift || "", wave: p.wave, role: "latestay" };
+      });
+      g.calls = (res.calls || []).map(function (p) {
+        return { name: cleanName(p.name), shift: p.shift || "", lastRoom: p.lastRoom || "", role: "call" };
       });
       g.lastSheet = { cells: res.cells || {}, date: res.date, file: res.fileName || res.file || "", kind: res.kind };
       try { localStorage.setItem("anespresso_runner_sheet_v1", JSON.stringify(g.lastSheet)); } catch (e) {}
@@ -1495,6 +1612,8 @@
         roomsN: openN, closedN: closedN,
         unmatchedN: (res.unmatched || []).length, deckN: g.onDeck.length, appliedAt: now,
         lateStays: g.lateStays,
+        calls: g.calls,
+        runners: res.runners || null,
         cleared: false
       };
       g.reliefPlan = {};
@@ -3128,6 +3247,21 @@
         shiftPillHtml(x.rec.shift) + '<span class="staff-name">' + chipName(x.rec.name) + "</span>" +
         studentMark(hasStudent(x.rec)) + '<span class="staff-last">' + x.room + "</span></button>";
     }).join("");
+    var callList = (g.calls || (g.assignmentMeta && g.assignmentMeta.calls) || []).filter(function (p) {
+      return p && p.name;
+    });
+    var callChips = callList.map(function (p) {
+      var hits = boardHits(p.name);
+      var roomHit = hits.filter(function (h) { return h.where === "room"; })[0];
+      var cls = ' class="roster-pill" data-deckkey="' + nameKey(p.name) + '"';
+      if (roomHit) cls += ' data-roomkey="' + roomHit.cat + "|" + roomHit.room + '"';
+      return '<button type="button"' + cls + ">" +
+        shiftPillHtml(p.shift) + '<span class="staff-name">' + chipName(p.name) + "</span>" +
+        '<span class="staff-last">' + (p.lastRoom || "call") + (roomHit ? " · " + roomHit.room : "") + "</span></button>";
+    }).join("");
+    var callBlock = callChips
+      ? '<div class="assign-cat-label">Call</div><div class="roster-grid">' + callChips + "</div>"
+      : "";
     pane.innerHTML =
       '<input id="desk-people-q" class="desk-people-search" type="search" placeholder="Search a name" autocomplete="off" autocorrect="off" spellcheck="false">' +
       '<button type="button" class="desk-add-btn" id="desk-add-staff">Add someone who came in</button>' +
@@ -3135,6 +3269,7 @@
       '<div class="roster-grid">' + (hereChips || '<span class="roster-empty">Nobody free right now</span>') + "</div>" +
       laterBlock +
       outBlock +
+      callBlock +
       '<div class="assign-cat-label">In a room</div>' +
       '<div class="roster-grid">' + (roomChips || '<span class="roster-empty">No one in a room</span>') + "</div>";
     var add = document.getElementById("desk-add-staff");
@@ -3367,6 +3502,7 @@
     g.onDeck = [];
     g.reliefPlan = {};
     g.lateStays = [];
+    g.calls = [];
     g.lastSheet = null;
     g.undoClose = null;
     try { localStorage.removeItem("anespresso_runner_sheet_v1"); } catch (e) {}
@@ -3378,7 +3514,7 @@
       appliedAt: Date.now(),
       date: (typeof todayStr === "function") ? todayStr() : "",
       file: "",
-      roomsN: 0, closedN: 0, deckN: 0, lateStays: []
+      roomsN: 0, closedN: 0, deckN: 0, lateStays: [], calls: []
     };
     resetRoomsAfterClear();
     publishStaff();
@@ -4152,7 +4288,7 @@
     (res.sheetPeople || []).forEach(function (p) {
       if (!p || !p.name) return;
       var hits = boardHits(p.name);
-      var anywhere = p.role === "wbf" || p.role === "breaker" || p.role === "midnight" || p.role === "call" || p.role === "latestay";
+      var anywhere = p.role === "wbf" || p.role === "breaker" || p.role === "midnight" || p.role === "call" || p.role === "latestay" || p.role === "resident" || p.role === "evening" || p.role === "night";
       if (p.role === "shift" || parseShiftLabel(p.roomRaw)) {
         var guessed = (parseShiftLabel(p.roomRaw) || {}).shift || p.shift || "";
         add({
@@ -4183,6 +4319,10 @@
         return;
       }
       if (anywhere) {
+        if (p.role === "latestay") {
+          var onLs = (g.lateStays || []).some(function (x) { return x && namesMatch(x.name, p.name); });
+          if (onLs) return;
+        }
         if (!hits.length) {
           add({
             reason: "missing", roomRaw: p.roomRaw, staffRaw: p.staffRaw, name: p.name,
@@ -4789,6 +4929,10 @@
       return "<li>" + (u.room || "") + " — " + (u.staff || "") + "</li>";
     }).join("");
     var hideN = 0;
+    var closedSet = {};
+    (res.closed || []).forEach(function (c) {
+      if (c && c.cat && c.room) closedSet[c.cat + "|" + c.room] = 1;
+    });
     if (typeof CATEGORIES !== "undefined") {
       var named = {};
       (res.rooms || []).forEach(function (r) {
@@ -4796,22 +4940,30 @@
       });
       CATEGORIES.forEach(function (c) {
         (c.rooms || []).forEach(function (room) {
-          if (!named[c.id + "|" + room]) hideN++;
+          if (!named[c.id + "|" + room] && !closedSet[c.id + "|" + room]) hideN++;
         });
       });
     }
+    var ntRun = res.runners && res.runners.nt;
+    var stRun = res.runners && res.runners.st;
+    var runLine = (ntRun || stRun)
+      ? "<li>Runners " + (ntRun ? "NT " + ntRun : "") + (ntRun && stRun ? " · " : "") + (stRun ? "ST " + stRun : "") + "</li>"
+      : "";
     ov.innerHTML =
       '<div class="assign-upload-card">' +
       "<h3>Sheet applied</h3>" +
       "<p class='assign-meta'>" + (res.kind || "") + (res.date ? " · " + res.date : "") + (file ? " · " + file.name : "") + "</p>" +
       dateWarn +
       "<ul class='assign-stats'>" +
-      "<li>" + (res.rooms || []).length + " rooms with a name</li>" +
+      runLine +
+      "<li>" + (res.rooms || []).filter(function (r) { return r && r.name && !r.closed; }).length + " rooms with a name</li>" +
       "<li>" + (res.closed || []).length + " marked CLOSED</li>" +
       (hideN ? "<li>" + hideN + " not on sheet (hidden)</li>" : "") +
       "<li>" + (res.late || []).length + " late (M+S)</li>" +
       "<li>" + (res.dinner || []).length + " dinner (Q+W+E)</li>" +
       "<li>" + ((res.onDeck || []).length) + " on deck (not in a room)</li>" +
+      ((res.lateStays || []).length ? "<li>" + res.lateStays.length + " late stay</li>" : "") +
+      ((res.calls || []).length ? "<li>" + res.calls.length + " call</li>" : "") +
       (res.unmatched && res.unmatched.length ? "<li>" + res.unmatched.length + " unmatched labels</li>" : "") +
       "</ul>" +
       (um ? "<ul class='assign-unmatched'>" + um + "</ul>" : "") +
@@ -5094,10 +5246,14 @@
   g.onDeck = g.onDeck || [];
   g.reliefPlan = g.reliefPlan || {};
   g.lateStays = g.lateStays || [];
+  g.calls = g.calls || [];
   g.assignmentMeta = g.assignmentMeta || null;
   g.parseAssignmentWorkbook = parseAssignmentWorkbook;
   g.applyAssignmentResult = applyAssignmentResult;
   g.handleAssignmentFile = handleAssignmentFile;
+  g.auditBoardVsSheet = auditBoardVsSheet;
+  g.normalizeRoom = normalizeRoom;
+  g.parseStaff = parseStaff;
   g.staffChipHtml = staffChipHtml;
   g.renderLateBoardBar = renderLateBoardBar;
   g.renderOnDeck = renderOnDeck;
