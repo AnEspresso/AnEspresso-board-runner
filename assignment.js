@@ -1230,6 +1230,166 @@
   g.tintRoomBtn = tintRoomBtn;
   g.roomBreakKind = roomBreakKind;
 
+  function hospitalAfterClose() {
+    try {
+      if (typeof currentWindow === "number" && currentWindow === 3) return true;
+      if (typeof hospitalMins === "function" && hospitalMins() >= 15 * 60 + 30) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  function defaultStaffView() {
+    try {
+      if (typeof currentRole !== "undefined" && currentRole === "crna" && myAssignType === "breaker") {
+        return hospitalAfterClose() ? "jobs" : "board";
+      }
+    } catch (e) {}
+    return "board";
+  }
+
+  function getStaffView() {
+    try {
+      var v = sessionStorage.getItem("anespresso_runner_staffview_v1");
+      if (v === "board" || v === "jobs") return v;
+    } catch (e) {}
+    return defaultStaffView();
+  }
+
+  function applyStaffView() {
+    var jobs = false;
+    try {
+      if (typeof currentRole !== "undefined" && currentRole === "crna") jobs = getStaffView() === "jobs";
+    } catch (e) {}
+    document.body.classList.toggle("staff-view-jobs", jobs);
+    document.body.classList.toggle("staff-view-board", !jobs);
+  }
+
+  function setStaffView(v) {
+    if (v !== "board" && v !== "jobs") return;
+    try { sessionStorage.setItem("anespresso_runner_staffview_v1", v); } catch (e) {}
+    applyStaffView();
+    try { if (typeof renderBreakerJobList === "function") renderBreakerJobList(); } catch (e) {}
+    try { if (typeof renderMySitePanel === "function") renderMySitePanel(); } catch (e) {}
+  }
+
+  function staffViewToggleHtml() {
+    var v = getStaffView();
+    return '<div class="staff-view-toggle" role="tablist">' +
+      '<button type="button" class="staff-view-btn' + (v === "board" ? " on" : "") + '" onclick="setStaffView(\'board\')">Board</button>' +
+      '<button type="button" class="staff-view-btn' + (v === "jobs" ? " on" : "") + '" onclick="setStaffView(\'jobs\')">Jobs</button>' +
+      "</div>";
+  }
+
+  function collectWindowDue() {
+    var items = [];
+    if (hospitalAfterClose()) {
+      ["late", "dinner"].forEach(function (kind) {
+        collectBreakQueue(kind).forEach(function (it) {
+          if (it && it.room && it.cat) items.push(it);
+        });
+      });
+      return items;
+    }
+    var w = typeof currentWindow === "number" ? currentWindow : 0;
+    if (typeof CATEGORIES === "undefined") return items;
+    CATEGORIES.forEach(function (cat) {
+      var rooms = [];
+      try { rooms = typeof activeRooms === "function" ? activeRooms(cat) : (cat.rooms || []); } catch (e) { rooms = cat.rooms || []; }
+      rooms.forEach(function (room) {
+        var rec = occupantOf(cat.id, room);
+        if (!rec || !rec.name) return;
+        if (rec.shift && !stillInHouse(rec.shift)) return;
+        var given = false;
+        try { given = !!(state[w] && state[w][cat.id] && state[w][cat.id][room]); } catch (e) {}
+        items.push({
+          name: rec.name,
+          shift: rec.shift || "",
+          kind: "window",
+          cat: cat.id,
+          room: room,
+          given: given
+        });
+      });
+    });
+    items.sort(function (a, b) {
+      if (a.given !== b.given) return a.given ? 1 : -1;
+      return String(a.room).localeCompare(String(b.room));
+    });
+    return items;
+  }
+
+  function staffJobsHtml() {
+    var urgent = [];
+    try {
+      Object.keys(sitePrefs || {}).forEach(function (room) {
+        if (sitePrefs[room] && sitePrefs[room].bathroom) urgent.push(room);
+      });
+    } catch (e) {}
+    var items = collectWindowDue();
+    var due = items.filter(function (it) { return !it.given; });
+    var had = items.filter(function (it) { return it.given; });
+    function jobRow(label, sub, onclick, kind) {
+      var cls = "job-row";
+      if (kind === "late") cls += " job-late";
+      if (kind === "dinner") cls += " job-dinner";
+      if (kind === "urgent") cls += " job-urgent";
+      if (kind === "had") cls += " job-info";
+      var inner = '<span class="job-main">' + label + "</span>" +
+        (sub ? '<span class="job-sub">' + sub + "</span>" : "");
+      if (!onclick) return '<div class="' + cls + '">' + inner + "</div>";
+      return '<button type="button" class="' + cls + '" onclick="' + onclick + '">' + inner + "</button>";
+    }
+    function winSub(it) {
+      if (it.kind === "dinner") return "dinner";
+      if (it.kind === "late") return "late";
+      try { return (typeof WIN_LABELS !== "undefined" && WIN_LABELS[currentWindow]) || "due"; } catch (e) { return "due"; }
+    }
+    var html = "";
+    if (urgent.length) {
+      html += '<div class="job-sec">Need a break now</div>';
+      urgent.forEach(function (room) {
+        var nm = "";
+        try { nm = (typeof staffLastName === "function") ? (staffLastName(room) || "") : ""; } catch (e) {}
+        html += jobRow(escHtml(room) + (nm ? " · " + escHtml(nm) : ""), "Urgent", "promptBathroomComplete('" + String(room).replace(/'/g, "\\'") + "')", "urgent");
+      });
+    }
+    if (due.length) {
+      html += '<div class="job-sec">Due this window · ' + due.length + "</div>";
+      due.forEach(function (it) {
+        var label = (it.name ? escHtml(chipName(it.name)) + " · " : "") + escHtml(it.room);
+        html += jobRow(label, winSub(it), "toggleRoom('" + it.cat + "','" + String(it.room).replace(/'/g, "\\'") + "')", it.kind === "dinner" ? "dinner" : (it.kind === "late" ? "late" : ""));
+      });
+    }
+    if (had.length) {
+      html += '<div class="job-sec">Already had it · ' + had.length + "</div>";
+      had.forEach(function (it) {
+        var label = (it.name ? escHtml(chipName(it.name)) + " · " : "") + escHtml(it.room);
+        html += jobRow(label, "had it", "", "had");
+      });
+    }
+    if (!urgent.length && !due.length) {
+      html += '<div class="job-empty">' + (hospitalAfterClose() ? "No late or dinner breaks due. Switch to Board to see rooms." : "No rooms due this window. Switch to Board to see everyone.") + "</div>";
+    }
+    return html;
+  }
+
+  function paintCrnaJobs() {
+    var panel = document.getElementById("my-site-panel");
+    if (!panel) return;
+    var slot = document.getElementById("staff-jobs-slot");
+    if (getStaffView() !== "jobs") {
+      if (slot) slot.remove();
+      return;
+    }
+    if (!slot) {
+      slot = document.createElement("div");
+      slot.id = "staff-jobs-slot";
+      slot.className = "staff-jobs-slot";
+      panel.appendChild(slot);
+    }
+    slot.innerHTML = staffJobsHtml();
+  }
+
   function publishStaff() {
     try {
       window.roomStaff = g.roomStaff || {};
@@ -1376,27 +1536,29 @@
   }
 
   function queueRowHtml(p, n) {
-    var tag = p.given ? "given" : (p.role === "breaker" ? "breaker" : (p.room || ""));
+    var tag = p.given ? "had it" : (p.role === "breaker" ? "breaker" : (p.room || ""));
     var last = tag ? '<span class="staff-last">' + tag + "</span>" : "";
     var num = p.given ? "" : '<span class="breakq-n">' + n + "</span>";
     return '<button type="button" class="breakq-item' + (p.given ? " given" : "") + '"' +
       (p.cat ? ' data-qcat="' + p.cat + '"' : "") +
       (p.room ? ' data-qroom="' + p.room + '"' : "") + ">" +
       num + shiftPillHtml(p.shift) +
-      '<span class="staff-name">' + chipName(p.name) + "</span>" + last +
+      '<span class="staff-name">' + chipName(p.name || p.room || "") + "</span>" + last +
       "</button>";
   }
 
   function queueBlockHtml(label, items) {
     var due = items.filter(function (p) { return !p.given; });
-    var givenN = items.length - due.length;
+    var had = items.filter(function (p) { return p.given; });
     if (!items.length) {
       return '<div class="late-board-row"><strong>' + label + "</strong> none in house</div>";
     }
     var rows = due.map(function (p, i) { return queueRowHtml(p, i + 1); }).join("");
-    var givenNote = givenN ? '<span class="breakq-given-n">' + givenN + " given</span>" : "";
-    return '<div class="late-board-row"><strong>' + label + "</strong> " + due.length + " due " + givenNote + "</div>" +
-      '<div class="breakq-list">' + rows + "</div>";
+    var hadRows = had.map(function (p) { return queueRowHtml(p, 0); }).join("");
+    return '<div class="late-board-row"><strong>' + label + "</strong> " + due.length + " due" +
+      (had.length ? " · " + had.length + " had it" : "") + "</div>" +
+      (rows ? '<div class="breakq-list">' + rows + "</div>" : "") +
+      (hadRows ? '<div class="breakq-had-label">Already had it</div><div class="breakq-list breakq-had">' + hadRows + "</div>" : "");
   }
 
   function runnerDrawerOpen() {
@@ -4730,7 +4892,9 @@
         ".runner-drawer.open .runner-drawer-body{display:block;}" +
         ".breakq-list{display:flex;flex-wrap:wrap;gap:5px;margin:4px 0 8px;}" +
         ".breakq-item{display:inline-flex;align-items:center;gap:3px;background:#FDF6EC;border:1px solid rgba(160,98,42,.2);border-radius:8px;padding:4px 7px;font:inherit;color:#1E0E04;cursor:pointer;-webkit-appearance:none;appearance:none;}" +
-        ".breakq-item.given{opacity:.38;}" +
+        ".breakq-item.given{opacity:1;background:#E8DDD0;border-style:dashed;}" +
+        ".breakq-item.given .staff-name{text-decoration:line-through;}" +
+        ".breakq-had-label{font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#9A6A38;margin:2px 0 4px;}" +
         ".breakq-n{font-size:9px;font-weight:800;color:#9A6A38;min-width:10px;}" +
         ".breakq-given-n{font-size:11px;color:#9A6A38;margin-left:6px;font-weight:500;}" +
         ".room-btn.queue-flash{box-shadow:inset 0 0 0 1.5px #7A4E2D;background:#F5E6D0;}" +
@@ -4816,6 +4980,7 @@
         ".job-row .job-main{font-size:14px;font-weight:800;}" +
         ".job-row .job-sub{font-size:11px;font-weight:700;color:#7A4E2D;flex-shrink:0;}" +
         ".job-row.job-info{cursor:default;background:#FDF6EC;}" +
+        ".job-row.job-info .job-main{text-decoration:line-through;font-weight:600;color:#7A4E2D;}" +
         ".job-row.job-late{background:#FFF0D8;border-color:#C8781A;}" +
         ".job-row.job-late .job-sub{color:#A05A10;}" +
         ".job-row.job-dinner{background:#7A4E2D;border-color:#5A3418;color:#FDF6EC;}" +
@@ -4842,7 +5007,12 @@
         ".room-btn.kind-late.done .staff-name{text-decoration:line-through;}" +
         ".room-btn.kind-dinner.done{background:#4A2E14;border-color:#2C1A0E;color:#FDF6EC;opacity:.55;box-shadow:none;}" +
         ".room-btn.kind-dinner.done .staff-name{text-decoration:line-through;color:#FDF6EC;}" +
-        ".room-btn.kind-late.done::after,.room-btn.kind-dinner.done::after{content:' ✓';font-size:12px;font-weight:900;}" +
+        ".room-btn.kind-late.done::after,.room-btn.kind-dinner.done::after{content:' had it';font-size:9px;font-weight:900;letter-spacing:.02em;}" +
+        ".staff-view-toggle{display:flex;gap:6px;margin:0 0 8px;}" +
+        ".staff-view-btn{flex:1;padding:9px 10px;min-height:40px;border-radius:10px;border:1.5px solid rgba(160,98,42,.25);background:#FEF6EC;color:#7A4E2D;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;}" +
+        ".staff-view-btn.on{background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;border-color:#7A4E2D;}" +
+        "body.staff-view-jobs #board{display:none;}" +
+        ".staff-jobs-slot{margin-top:8px;}" +
         ".runner-drawer.desk-only{padding:8px 14px 10px;background:#fff;border-bottom:1px solid rgba(160,98,42,.12);}" +
         ".board-desk-btn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border:none;border-radius:12px;background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;cursor:pointer;font:inherit;text-align:left;box-shadow:0 1px 3px rgba(122,78,45,.2);}" +
         ".board-desk-btn .desk-title{font-size:15px;font-weight:800;}" +
@@ -4907,59 +5077,15 @@
   function renderBreakerJobList() {
     var panel = document.getElementById("breaker-panel");
     if (!panel) return;
-    var urgent = [];
-    try {
-      Object.keys(sitePrefs || {}).forEach(function (room) {
-        if (sitePrefs[room] && sitePrefs[room].bathroom) urgent.push(room);
-      });
-    } catch (e) {}
-    var due = [];
-    var afterClose = false;
-    try {
-      if (typeof currentWindow === "number" && currentWindow === 3) afterClose = true;
-      else if (hospitalMins() >= 15 * 60 + 30) afterClose = true;
-    } catch (e) {}
-    if (afterClose) {
-      ["late", "dinner"].forEach(function (kind) {
-        collectBreakQueue(kind).forEach(function (it) {
-          if (!it.given && it.room && it.cat) due.push(it);
-        });
-      });
-    }
-    function jobRow(label, sub, onclick, kind) {
-      var cls = "job-row";
-      if (kind === "late") cls += " job-late";
-      if (kind === "dinner") cls += " job-dinner";
-      if (kind === "urgent") cls += " job-urgent";
-      return '<button type="button" class="' + cls + '" onclick="' + onclick + '">' +
-        '<span class="job-main">' + label + "</span>" +
-        (sub ? '<span class="job-sub">' + sub + "</span>" : "") +
-        "</button>";
-    }
+    applyStaffView();
+    var view = getStaffView();
     var html = '<div class="breaker-panel-inner breaker-jobs">';
-    html += '<div><div class="my-site-name">Breaker</div><div class="my-site-label">Tap a room on the board to mark a break</div></div>';
-    if (urgent.length) {
-      html += '<div class="job-sec">Need a break now</div>';
-      urgent.forEach(function (room) {
-        var nm = "";
-        try { nm = (typeof staffLastName === "function") ? (staffLastName(room) || "") : ""; } catch (e) {}
-        html += jobRow(escHtml(room) + (nm ? " · " + escHtml(nm) : ""), "Urgent", "promptBathroomComplete('" + String(room).replace(/'/g, "\\'") + "')", "urgent");
-      });
-    }
-    if (due.length) {
-      html += '<div class="job-sec">Due this window</div>';
-      due.slice(0, 12).forEach(function (it) {
-        html += jobRow(
-          escHtml(chipName(it.name)) + " · " + escHtml(it.room),
-          it.kind === "dinner" ? "dinner" : "late",
-          "toggleRoom('" + it.cat + "','" + String(it.room).replace(/'/g, "\\'") + "')",
-          it.kind === "dinner" ? "dinner" : "late"
-        );
-      });
-    }
-    if (!urgent.length && !due.length) {
-      html += '<div class="job-empty">No urgent rooms right now. Use the board below.</div>';
-    }
+    html += staffViewToggleHtml();
+    html += '<div><div class="my-site-name">Breaker</div><div class="my-site-label">' +
+      (view === "jobs" ? "Jobs for this window · switch to Board anytime" : "Whole board · switch to Jobs for a due list") +
+      "</div></div>";
+    if (view === "jobs") html += staffJobsHtml();
+    else html += '<div class="job-empty">Use the board below. Jobs lists who is due.</div>';
     html += "</div>";
     panel.innerHTML = html;
   }
@@ -4986,6 +5112,11 @@
   g.todayRoster = todayRoster;
   g.findStaffByName = findStaffByName;
   g.renderBreakerJobList = renderBreakerJobList;
+  g.setStaffView = setStaffView;
+  g.getStaffView = getStaffView;
+  g.applyStaffView = applyStaffView;
+  g.paintCrnaJobs = paintCrnaJobs;
+  g.staffViewToggleHtml = staffViewToggleHtml;
   g.longestIdleDeck = longestIdleDeck;
   g.chipName = chipName;
   g.lastName = lastName;
