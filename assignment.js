@@ -445,6 +445,25 @@
     return null;
   }
 
+  function guessCatForLabel(raw) {
+    var loc = normalizeRoom(raw);
+    if (loc) return loc;
+    var s = stripRoomTime(raw);
+    var su = s.toUpperCase();
+    var n = parseInt((su.match(/\d+/) || [])[0], 10);
+    if (n) {
+      if (n >= 1 && n <= 36) return { cat: "nt", room: /^OR\b/i.test(s) ? s : "OR " + n };
+      if (n >= 51 && n <= 66) return { cat: "st", room: /^OR\b/i.test(s) ? s : "OR " + n };
+      if (n >= 71 && n <= 76) return { cat: "ccs", room: /^OR\b/i.test(s) ? s : "OR " + n };
+      if (n >= 100 && n <= 109) return { cat: "s100", room: /^OR\b/i.test(s) ? s : "OR " + n };
+    }
+    if (/^ENDO/i.test(su)) return { cat: "endo", room: s };
+    if (/^(EP|TEE|2231)/i.test(su)) return { cat: "ep", room: s };
+    if (/^OB/i.test(su)) return { cat: "fbc", room: s };
+    if (/^STE/i.test(su)) return { cat: "s100", room: s };
+    return { cat: "nora", room: s || String(raw || "").trim() };
+  }
+
   function expandComboRooms(raw) {
     var s = String(raw || "").trim();
     if (!s || s.indexOf("+") < 0) return [s];
@@ -4445,7 +4464,7 @@
     }
     g.roomStaff[loc.cat][loc.room] = {
       name: item.name, shift: item.shift || "", kind: item.kind || breakKind(item.shift),
-      closed: false, student: !!item.student, firstCase: ""
+      closed: false, student: !!item.student, firstCase: item.firstCase || extractRoomTime(item.roomRaw) || ""
     };
     try {
       var es = typeof catEditState !== "undefined" && catEditState[loc.cat];
@@ -4711,9 +4730,71 @@
     var zoom = null;
     var zoomEl = document.getElementById("rev-zoom");
     var innerEl = document.getElementById("rev-inner");
+    var creating = false;
+    var createCat = "";
     if (zoomEl && innerEl) {
       zoom = attachSheetZoom(zoomEl, innerEl);
       setTimeout(function () { if (zoom) zoom.fit(); }, 30);
+    }
+
+    function createFormHtml(q) {
+      var guessed = guessCatForLabel((q && q.roomRaw) || "");
+      if (!createCat) createCat = (guessed && guessed.cat) || "nora";
+      var name = stripRoomTime((q && q.roomRaw) || "") || (guessed && guessed.room) || "";
+      var cats = "";
+      (typeof CATEGORIES !== "undefined" ? CATEGORIES : []).forEach(function (c) {
+        cats += '<button type="button" class="rev-cat' + (c.id === createCat ? " on" : "") + '" data-create-cat="' + esc(c.id) + '">' + esc(c.name) + "</button>";
+      });
+      return '<div class="rev-create" id="rev-create">' +
+        '<div class="rev-create-label">Name the pill for today</div>' +
+        '<input class="rev-create-input" id="rev-create-name" maxlength="24" value="' + esc(name) + '" autocomplete="off">' +
+        '<div class="rev-create-label">Which suite?</div>' +
+        '<div class="rev-create-cats">' + cats + "</div>" +
+        '<button type="button" class="rev-create-go" data-create-go="1">Add for today</button></div>';
+    }
+    function bindCreateForm(q) {
+      var box = document.getElementById("rev-create");
+      if (!box || !q) return;
+      box.querySelectorAll("[data-create-cat]").forEach(function (btn) {
+        btn.onclick = function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          createCat = btn.getAttribute("data-create-cat") || createCat;
+          box.querySelectorAll("[data-create-cat]").forEach(function (b) {
+            b.classList.toggle("on", b.getAttribute("data-create-cat") === createCat);
+          });
+        };
+      });
+      var go = box.querySelector("[data-create-go]");
+      if (go) {
+        go.onclick = function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          var inp = document.getElementById("rev-create-name");
+          var name = inp ? String(inp.value || "").replace(/\s+/g, " ").trim() : "";
+          if (!name) {
+            try { if (typeof showToast === "function") showToast("Name the room first"); } catch (e) {}
+            return;
+          }
+          if (!createCat) createCat = "nora";
+          var loc = null;
+          try {
+            if (typeof addCustomRoomForDay === "function") {
+              loc = addCustomRoomForDay(createCat, name, {
+                sheetRaw: q.roomRaw || name,
+                who: q.name || "",
+                source: "review"
+              });
+            }
+          } catch (e) {}
+          if (!loc) loc = { cat: createCat, room: name };
+          var cur = items.shift();
+          creating = false;
+          createCat = "";
+          if (cur) placeUnsureChoice(cur, loc);
+          paint();
+        };
+      }
     }
 
     function paint() {
@@ -4761,6 +4842,9 @@
         } else {
           chips += '<button type="button" class="rev-chip deck" data-deck="1">Keep on deck</button>';
         }
+        if (q.reason !== "shift" && q.reason !== "need-shift" && q.reason !== "extra") {
+          chips += '<button type="button" class="rev-chip create" data-create="1">Create a room…</button>';
+        }
       }
       if (qEl) {
         qEl.innerHTML = q
@@ -4770,14 +4854,24 @@
               : ('Sheet said <strong>' + esc(q.roomRaw) + "</strong>")) + "</div>" +
             '<div class="rev-who">' + shiftPillHtml(q.shift) + " " + esc(q.name) + (q.student ? " ^" : "") + "</div>" +
             '<div class="rev-now">Board now: ' + esc(q.boardNow || "—") + "</div>" +
-            '<div class="rev-chips">' + chips + "</div>")
+            '<div class="rev-chips">' + chips + "</div>" +
+            (creating ? createFormHtml(q) : ""))
           : '<div class="rev-ask">Board is ready.</div>';
         qEl.querySelectorAll(".rev-chip").forEach(function (btn) {
           btn.onclick = function (ev) {
             ev.preventDefault();
             ev.stopPropagation();
+            if (btn.getAttribute("data-create")) {
+              creating = true;
+              createCat = "";
+              paint();
+              var inp = document.getElementById("rev-create-name");
+              if (inp) setTimeout(function () { try { inp.focus(); inp.select(); } catch (e) {} }, 40);
+              return;
+            }
             var cur = items.shift();
             if (!cur) { paint(); return; }
+            creating = false;
             if (btn.getAttribute("data-remove")) removeExtra(cur);
             else if (btn.getAttribute("data-shift")) applyShiftGuess(cur, btn.getAttribute("data-shift"));
             else if (btn.getAttribute("data-keep") || btn.getAttribute("data-deck")) { /* leave */ }
@@ -4785,6 +4879,7 @@
             paint();
           };
         });
+        bindCreateForm(q);
       }
       if (innerEl) {
         innerEl.querySelectorAll("td.on").forEach(function (td) { td.classList.remove("on"); });
@@ -5222,6 +5317,14 @@
         ".rev-chips{display:flex;flex-wrap:wrap;gap:6px;}" +
         ".rev-chip{padding:10px 12px;border-radius:10px;border:1.5px solid rgba(160,98,42,.25);background:#FDF6EC;color:#1E0E04;font-size:13px;font-weight:800;cursor:pointer;font:inherit;}" +
         ".rev-chip.deck{background:#fff;color:#7A4E2D;}" +
+        ".rev-chip.create{background:#1E0E04;color:#FDF6EC;border-color:#1E0E04;}" +
+        ".rev-create{margin-top:10px;padding:10px;border-radius:12px;border:1.5px solid rgba(160,98,42,.28);background:#FDF6EC;}" +
+        ".rev-create-label{font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#9A6A38;margin:0 0 6px;}" +
+        ".rev-create-input{width:100%;box-sizing:border-box;margin:0 0 10px;padding:11px 12px;border-radius:10px;border:1.5px solid rgba(160,98,42,.3);background:#fff;color:#1E0E04;font:inherit;font-size:15px;font-weight:800;}" +
+        ".rev-create-cats{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px;}" +
+        ".rev-cat{padding:8px 10px;border-radius:999px;border:1.5px solid rgba(160,98,42,.25);background:#fff;color:#7A4E2D;font-size:12px;font-weight:800;cursor:pointer;font:inherit;}" +
+        ".rev-cat.on{background:#7A4E2D;color:#fff;border-color:#7A4E2D;}" +
+        ".rev-create-go{width:100%;padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#C8781A,#E8A020);color:#fff;font-size:14px;font-weight:800;cursor:pointer;font:inherit;}" +
         ".rev-done{width:100%;margin-top:12px;padding:12px;border:none;border-radius:12px;background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;font-size:14px;font-weight:800;cursor:pointer;}" +
         ".rev-empty{font-size:12px;color:#9A6A38;}";
       document.head.appendChild(st);
@@ -5270,6 +5373,7 @@
   g.handleAssignmentFile = handleAssignmentFile;
   g.auditBoardVsSheet = auditBoardVsSheet;
   g.normalizeRoom = normalizeRoom;
+  g.rebuildRoomIndex = function () { ROOM_INDEX = null; buildRoomIndex(); };
   g.parseStaff = parseStaff;
   g.staffChipHtml = staffChipHtml;
   g.renderLateBoardBar = renderLateBoardBar;
