@@ -1525,7 +1525,8 @@
     var out;
     if (/CRNA NORTH/i.test(blob) && /STAFF TARGETS/i.test(blob)) out = parseSplitRoster(cells);
     else if (blob.indexOf("CRNA SCHEDULE") >= 0 && blob.indexOf("NORTH TOWER") >= 0) out = parseWeekday(cells);
-    else out = parseWeekend(cells);
+    else if (blob.indexOf("NORTH TOWER") >= 0 && blob.indexOf("SOUTH TOWER") >= 0) out = parseWeekend(cells);
+    else out = { kind: "unknown", date: "", dates: [], rooms: [], closed: [], unmatched: [], people: [], onDeck: [], unsure: [], preview: [], sheetPeople: [], runners: {} };
     out.file = fileName || "";
     out.cells = cells;
     out.onDeck = out.onDeck || [];
@@ -5605,8 +5606,8 @@
       return;
     }
     var today = typeof todayStr === "function" ? todayStr() : "";
-    var dateWarn = res.date && today && res.date !== today
-      ? '<div class="assign-warn">Sheet date is ' + res.date + " (today is " + today + "). Apply anyway?</div>"
+    var dateNote = res.date && today && dayKey(res.date) !== dayKey(today)
+      ? '<div class="assign-warn">Loaded ' + prettyDay(res.date) + ". Today is " + prettyDay(today) + ".</div>"
       : "";
     var um = (res.unmatched || []).slice(0, 6).map(function (u) {
       return "<li>" + (u.room || "") + " — " + (u.staff || "") + "</li>";
@@ -5636,7 +5637,7 @@
       '<div class="assign-upload-card">' +
       "<h3>Sheet applied</h3>" +
       "<p class='assign-meta'>" + (res.kind || "") + (res.date ? " · " + res.date : "") + (file ? " · " + file.name : "") + "</p>" +
-      dateWarn +
+      dateNote +
       "<ul class='assign-stats'>" +
       runLine +
       "<li>" + (res.rooms || []).filter(function (r) { return r && r.name && !r.closed; }).length + " rooms with a name</li>" +
@@ -5667,19 +5668,118 @@
     done.addEventListener("touchend", closeOv, { passive: false });
   }
 
+  function prettyDay(k) {
+    var p = String(dayKey(k) || "").split("-");
+    if (p.length < 3 || !p[0]) return "";
+    return parseInt(p[1], 10) + "/" + parseInt(p[2], 10) + "/" + p[0];
+  }
+
+  function sheetLoadProblem(res) {
+    var today = "";
+    try { today = dayKey(todayStr()); } catch (e) {}
+    var kind = res && res.kind;
+    if (kind !== "weekday" && kind !== "weekend") {
+      if (kind === "split") {
+        return {
+          title: "This isn't a daily assignment sheet",
+          body: "This is the name roster, not the weekday or weekend assignment grid. It will not place people into rooms.",
+          allow: true,
+          proceed: "Merge roster anyway"
+        };
+      }
+      return {
+        title: "This isn't a daily assignment sheet",
+        body: "This file isn't a weekday or weekend assignment sheet, so it was not loaded.",
+        allow: false,
+        proceed: ""
+      };
+    }
+    var sheetDay = dayKey(res.date);
+    var dates = [];
+    (res.dates || []).forEach(function (d) {
+      var dk = dayKey(d);
+      if (dk && dates.indexOf(dk) < 0) dates.push(dk);
+    });
+    if (!sheetDay) {
+      return {
+        title: "No date on this sheet",
+        body: "This looks like an assignment sheet, but it has no date. Today is " + prettyDay(today) + ".",
+        allow: true,
+        proceed: "Load anyway"
+      };
+    }
+    if (today && sheetDay !== today) {
+      var span = dates.length > 1 ? dates.map(prettyDay).join(" and ") : prettyDay(sheetDay);
+      var lead = dates.length > 1 ? ("Weekend file for " + span + ". ") : "";
+      return {
+        title: "This sheet is for a different day",
+        body: lead + "Loading it would put " + prettyDay(sheetDay) + " on the board. Today is " + prettyDay(today) + ".",
+        allow: true,
+        proceed: "Load anyway"
+      };
+    }
+    return null;
+  }
+
+  function confirmSheetLoad(problem, file) {
+    return new Promise(function (resolve) {
+      var existing = document.getElementById("assign-upload-overlay");
+      if (existing) existing.remove();
+      var ov = document.createElement("div");
+      ov.id = "assign-upload-overlay";
+      ov.className = "assign-upload-overlay";
+      var proceed = problem.allow
+        ? '<button type="button" class="assign-cancel" data-act="yes">' + problem.proceed + "</button>"
+        : "";
+      ov.innerHTML =
+        '<div class="assign-upload-card">' +
+        "<h3>" + problem.title + "</h3>" +
+        '<div class="assign-warn">' + problem.body + "</div>" +
+        "<p class='assign-meta'>" + (file && file.name ? file.name : "") + "</p>" +
+        '<div class="assign-actions">' +
+        '<button type="button" class="assign-apply" data-act="no">Don\'t load</button>' +
+        proceed +
+        "</div></div>";
+      document.body.appendChild(ov);
+      var settled = false;
+      function finish(yes, ev) {
+        if (settled) return;
+        settled = true;
+        if (ev) { try { ev.preventDefault(); ev.stopPropagation(); } catch (e) {} }
+        ov.remove();
+        resolve(!!yes);
+      }
+      ov.addEventListener("click", function (e) {
+        var btn = e.target.closest && e.target.closest("[data-act]");
+        if (btn) finish(btn.getAttribute("data-act") === "yes", e);
+        else if (e.target === ov) finish(false, e);
+      }, true);
+    });
+  }
+
+  function finishAssignmentLoad(res, file) {
+    applyAssignmentResult(res);
+    if (res.kind === "split") {
+      showAssignSummary(res, file);
+      return;
+    }
+    if (res.kind !== "weekday" && res.kind !== "weekend") return;
+    res.unsure = auditBoardVsSheet(res);
+    if (res.unsure && res.unsure.length) showAssignReview(res, file);
+    else showAssignSummary(res, file);
+  }
+
   async function handleAssignmentFile(file) {
     if (!file) return;
     try {
       var buf = await file.arrayBuffer();
       var res = await parseAssignmentWorkbook(buf, file.name);
-      applyAssignmentResult(res);
-      if (res.kind === "split") {
-        showAssignSummary(res, file);
-        return;
+      var problem = sheetLoadProblem(res);
+      if (problem) {
+        var yes = await confirmSheetLoad(problem, file);
+        if (!yes) return;
       }
-      res.unsure = auditBoardVsSheet(res);
-      if (res.unsure && res.unsure.length) showAssignReview(res, file);
-      else showAssignSummary(res, file);
+      finishAssignmentLoad(res, file);
     } catch (e) {
       try { if (typeof showToast === "function") showToast("Could not read that sheet"); } catch (x) {}
       console.warn(e);

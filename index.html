@@ -169,7 +169,7 @@ let currentWindow=0;let currentRole='crna';let eveningConfirmed=false;let pendin
 const LS_KEY='anespresso_runner_shared_v1';
 const SESSION_KEY='anespresso_runner_session_v1';
 const SYNCLOG_KEY='anespresso_synclog_v1';
-const APP_VERSION=71;const APP_VERSION_LABEL="1.1.26";function versionAhead(a,b){if(typeof a!=="number"||typeof b!=="number")return false;if(a<1e12&&b>1e12)return true;if(a>1e12&&b<1e12)return false;return a>b;}(function(){var el=document.getElementById("splash-version");if(el)el.textContent="v"+APP_VERSION_LABEL;var b=document.getElementById("dev-build-badge");if(b)b.textContent="Board runner v"+APP_VERSION_LABEL+" · isolated board + push";})();
+const APP_VERSION=72;const APP_VERSION_LABEL="1.1.27";function versionAhead(a,b){if(typeof a!=="number"||typeof b!=="number")return false;if(a<1e12&&b>1e12)return true;if(a>1e12&&b<1e12)return false;return a>b;}(function(){var el=document.getElementById("splash-version");if(el)el.textContent="v"+APP_VERSION_LABEL;var b=document.getElementById("dev-build-badge");if(b)b.textContent="Board runner v"+APP_VERSION_LABEL+" · isolated board + push";})();
 function fbVersionPath(){var file=(typeof isPublicAnespressoHost==='function'&&isPublicAnespressoHost())?'/runnerMinVersion.json':'/minVersion.json';return firebaseUrl+file+fbAuthParam();}
 function pagesVersionUrl(){try{return new URL('version.json',location.href).toString()+'?t='+Date.now();}catch(e){return 'version.json?t='+Date.now();}}
 var versionCheckInProgress=false;var forceUpdateShown=false;var _versionPollTimer=null;
@@ -444,7 +444,7 @@ window.addEventListener('load',async()=>{try{if(enforceHttps())return;const urlF
 const session=loadSession();
 if(session&&firebaseUrl&&session.picked){resumeSession(session);}
 else if(!firebaseUrl&&isLocalPreviewHost()){try{skipSetup();currentRole='runner';var _s=document.getElementById('splash');if(_s){_s.classList.add('exit');_s.style.display='none';_s.style.visibility='hidden';}enterApp();if(typeof mountUploadButton==='function')mountUploadButton();}catch(e){}}}catch(e){applyDailyDefaults();}});</script>
-<script src="assignment.js?v=71"></script>
+<script src="assignment.js?v=72"></script>
 <div id="toast"></div>
 <div id="undo-bar"><span class="undo-text" id="undo-text"></span><button class="undo-btn" onclick="performUndo()">Undo</button></div>
 </body>
