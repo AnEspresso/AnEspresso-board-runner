@@ -509,14 +509,48 @@
     return String(n || "").replace(/^Dr\.?\s*/i, "").trim();
   }
 
+  function flipCommaName(s) {
+    var m = String(s || "").trim().match(/^([^,]+),\s*(.+)$/);
+    if (!m) return cleanName(s);
+    return cleanName(m[2] + " " + m[1]);
+  }
+
+  function editDistance(a, b) {
+    a = String(a || "");
+    b = String(b || "");
+    if (a === b) return 0;
+    if (!a || !b) return 99;
+    if (Math.abs(a.length - b.length) > 2) return 99;
+    var prev = [];
+    var i, j;
+    for (j = 0; j <= b.length; j++) prev[j] = j;
+    for (i = 1; i <= a.length; i++) {
+      var cur = [i];
+      var rowMin = i;
+      for (j = 1; j <= b.length; j++) {
+        var cost = a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1;
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+        if (cur[j] < rowMin) rowMin = cur[j];
+      }
+      if (rowMin > 2) return 99;
+      prev = cur;
+    }
+    return prev[b.length];
+  }
+
   function namesMatch(a, b) {
     if (!a || !b) return false;
     if (nameKey(bareName(a)) === nameKey(bareName(b))) return true;
     var la = lastName(a).toLowerCase(), lb = lastName(b).toLowerCase();
-    if (!la || la !== lb) return false;
-    var fa = firstName(a), fb = firstName(b);
+    var fa = firstName(a).toLowerCase(), fb = firstName(b).toLowerCase();
+    if (!la || !lb) return false;
+    var lastOk = la === lb || (la.length >= 6 && lb.length >= 6 && editDistance(la, lb) <= 2);
+    if (!lastOk) return false;
     if (!fa || !fb) return true;
-    return fa.charAt(0).toLowerCase() === fb.charAt(0).toLowerCase();
+    if (fa === fb) return true;
+    if (fa.charAt(0) === fb.charAt(0) && (fa.length === 1 || fb.length === 1)) return true;
+    if (la === lb && fa.charAt(0) === fb.charAt(0)) return true;
+    return false;
   }
 
   function nameKey(n) {
@@ -871,12 +905,14 @@
       }
       if (isJunkStaff(st.name, st.shift)) return;
       var isCombo = labels.length > 1;
-      recordPerson(roomRaw, staffRaw, st, locs, isCombo ? "combo" : "", refs);
+      var placedLocs = [];
+      var bumped = false;
       locs.forEach(function (loc) {
         var key = loc.cat + "|" + loc.room;
         var isSte = src === "ste" || /^STE\.?\s*10[1-9]$/i.test(roomRaw);
         if (filled[key] && !st.closed && !isSte && !isCombo) {
           addDeck(st, loc.room, src === "cd" ? "offsite" : "extra");
+          bumped = true;
           return;
         }
         if (filled[key] && isCombo) return;
@@ -890,8 +926,10 @@
         }
         filled[key] = rec;
         rooms.push(rec);
+        placedLocs.push(loc);
         if (rec.closed) closed.push({ cat: loc.cat, room: loc.room });
       });
+      recordPerson(roomRaw, staffRaw, st, isCombo ? locs : placedLocs, bumped && !placedLocs.length ? "extra" : (isCombo ? "combo" : ""), refs);
     }
     var ntImplied = [];
     try {
@@ -989,14 +1027,14 @@
         var lst = parseStaff(h);
         if (lst && lst.name && !isJunkStaff(lst.name, lst.shift)) {
           var lsShift = lst.shift || "";
-          if (!lsShift) {
-            rooms.forEach(function (x) {
-              if (x.name && nameKey(x.name) === nameKey(lst.name) && x.shift) lsShift = x.shift;
-            });
-          }
+          rooms.forEach(function (x) {
+            if (!x.name || x.closed || !namesMatch(x.name, lst.name)) return;
+            if (nameKey(x.name) !== nameKey(lst.name)) lst.name = x.name;
+            if (!lsShift && x.shift) lsShift = x.shift;
+          });
           if (!lsShift) {
             onDeck.forEach(function (p) {
-              if (p.name && nameKey(p.name) === nameKey(lst.name) && p.shift) lsShift = p.shift;
+              if (p.name && namesMatch(p.name, lst.name) && p.shift) lsShift = p.shift;
             });
           }
           lateStays.push({
@@ -1109,7 +1147,8 @@
       var assign = String(opts.assign || "").trim();
       var at3p = /@\s*3\s*p/i.test(assign);
       var assignClean = assign.replace(/@\s*3\s*p.*/i, "").trim();
-      var loc = assignClean && !/^BR$/i.test(assignClean) ? normalizeRoom(assignClean) : null;
+      var bareOb = /^OB$/i.test(assignClean);
+      var loc = (!bareOb && assignClean && !/^BR$/i.test(assignClean)) ? normalizeRoom(assignClean) : null;
       var role = opts.role || "";
       if (/^BR$/i.test(assignClean) || /^BR$/i.test(assign)) role = "breaker";
       if (at3p && !role) role = "float";
@@ -1119,7 +1158,7 @@
         assign: assign, cat: loc && loc.cat, room: loc && loc.room,
         closed: false, kind: opts.kind || breakKind(opts.shift),
         early: !!opts.early, orient: !!opts.orient, student: !!opts.student,
-        role: role, at3p: at3p, intended: at3p ? "OB" : (opts.intended || "")
+        role: role, at3p: at3p, ob: bareOb && !at3p, intended: at3p ? "OB" : (opts.intended || "")
       });
     }
 
@@ -1208,16 +1247,25 @@
       var dk = dayKey(p.date);
       if (dk && datesSeen.indexOf(dk) < 0) datesSeen.push(dk);
     });
-    var dayPeople = people.filter(function (p) {
-      if (!today) return true;
-      var dk = dayKey(p.date);
-      return !dk || dk === today;
-    });
-    if (today && !dayPeople.length && people.length) {
-      var pick = datesSeen[datesSeen.length - 1] || datesSeen[0];
-      dayPeople = people.filter(function (p) { return dayKey(p.date) === pick; });
-      today = pick || today;
+    function dateNum(k) {
+      var p = String(k || "").split("-").map(function (x) { return parseInt(x, 10); });
+      if (p.length < 3 || !p[0]) return 0;
+      return p[0] * 10000 + p[1] * 100 + p[2];
     }
+    var pickDay = "";
+    if (today && datesSeen.indexOf(today) >= 0) pickDay = today;
+    else {
+      var nowN = today ? dateNum(today) : 0;
+      var future = datesSeen.filter(function (d) { return dateNum(d) >= nowN; }).sort(function (a, b) { return dateNum(a) - dateNum(b); });
+      if (future.length) pickDay = future[0];
+      else pickDay = datesSeen.slice().sort(function (a, b) { return dateNum(b) - dateNum(a); })[0] || "";
+    }
+    var dayPeople = people.filter(function (p) {
+      if (!pickDay) return true;
+      var dk = dayKey(p.date);
+      return !dk || dk === pickDay;
+    });
+    today = pickDay || today;
 
     var rooms = [];
     var unmatched = [];
@@ -1245,7 +1293,7 @@
       if (p.role === "call") { take(p, { role: "call", lastRoom: p.assign || "call" }); return; }
       if (p.role === "midnight") { take(p, { role: "midnight", lastRoom: "night" }); return; }
       if (p.at3p) { take(p, { role: "float", lastRoom: "OB @3p", intended: "OB" }); return; }
-      if (p.room && /^OB/i.test(p.room)) { obQueue.push(p); return; }
+      if (p.ob || (p.room && /^OB$/i.test(p.room))) { obQueue.push(p); return; }
       if (p.cat && p.room) {
         rooms.push({ cat: p.cat, room: p.room, shift: p.shift, name: p.name, closed: false, kind: p.kind, student: !!p.student });
         used[nameKey(p.name)] = 1;
@@ -1258,9 +1306,13 @@
     obQueue.forEach(function (p, i) {
       if (used[nameKey(p.name)]) return;
       if (i < obSlots.length) {
+        p.cat = "fbc";
+        p.room = obSlots[i];
         rooms.push({ cat: "fbc", room: obSlots[i], shift: p.shift, name: p.name, closed: false, kind: p.kind, student: !!p.student });
         used[nameKey(p.name)] = 1;
       } else {
+        p.room = "";
+        p.cat = "";
         take(p, { role: "float", lastRoom: "OB", intended: "OB" });
       }
     });
@@ -1289,6 +1341,60 @@
     };
   }
 
+  function parseSplitRoster(cells) {
+    var people = [];
+    var calls = [];
+    var seen = {};
+    var lastN = "";
+    var lastS = "";
+    var callWave = "";
+    function addRoster(shiftRaw, nameRaw, tower) {
+      var nm = flipCommaName(nameRaw);
+      if (!nm || !/[A-Za-z]{3,}/.test(nm)) return;
+      if (/crna|assign|shift|north|south|orientee|resident|target|call/i.test(nm)) return;
+      var lab = shiftRaw ? parseShiftLabel(String(shiftRaw).replace(/\s+/g, "")) : null;
+      var shift = lab ? lab.shift : "";
+      var st = parseStaff((shift ? shift + " " : "") + nm);
+      if (!st || !st.name || isJunkStaff(st.name, st.shift)) return;
+      var k = nameKey(st.name);
+      if (seen[k]) return;
+      seen[k] = 1;
+      people.push({
+        name: st.name, shift: st.shift || shift, kind: st.kind || "none",
+        tower: tower, role: "float", student: !!st.orient, orient: !!st.orient
+      });
+    }
+    var r;
+    for (r = 1; r <= 80; r++) {
+      var a = cell(cells, "A", r), b = cell(cells, "B", r);
+      var e = cell(cells, "E", r), f = cell(cells, "F", r);
+      var h = cell(cells, "H", r), i = cell(cells, "I", r);
+      if (/^shift$/i.test(a)) lastN = "";
+      if (/^shift$/i.test(e)) lastS = "";
+      if (b && !/^CRNA/i.test(b) && !/^shift$/i.test(b)) {
+        if (a && parseShiftLabel(String(a).replace(/\s+/g, ""))) lastN = a;
+        if (lastN || (a && parseShiftLabel(String(a).replace(/\s+/g, "")))) addRoster(lastN || a, b, "NT");
+      }
+      if (f && !/^CRNA/i.test(f) && !/^shift$/i.test(f)) {
+        if (e && parseShiftLabel(String(e).replace(/\s+/g, ""))) lastS = e;
+        if (lastS || (e && parseShiftLabel(String(e).replace(/\s+/g, "")))) addRoster(lastS || e, f, "ST");
+      }
+      if (/general call/i.test(h)) callWave = "General";
+      else if (/heart call/i.test(h)) callWave = "Heart";
+      else if (/3:30/.test(h)) callWave = "1530";
+      else if (/5:30/.test(h)) callWave = "1730";
+      else if (/7:30/.test(h) && /call/i.test(h)) callWave = "1930";
+      if ((/^1st$/i.test(h) || /^GC\s*\d/i.test(h)) && i && /[A-Za-z]{3,}/.test(i)) {
+        var cn = flipCommaName(i);
+        if (cn) calls.push({ name: cn, shift: "", lastRoom: (callWave + " " + h.replace(/\s+/g, "")).trim(), role: "call" });
+      }
+    }
+    return {
+      kind: "split", date: "", rooms: [], closed: [], unmatched: [],
+      people: people, onDeck: [], calls: calls, unsure: [], preview: [], sheetPeople: []
+    };
+  }
+
   async function parseAssignmentWorkbook(arrayBuffer, fileName) {
     buildRoomIndex();
     var zip = await unzip(arrayBuffer);
@@ -1298,9 +1404,8 @@
     var cells = loadCells(xmlText(sheet), ss);
     var blob = Object.keys(cells).map(function (k) { return cells[k]; }).join(" ").toUpperCase();
     var out;
-    if (/CRNA NORTH/i.test(blob) && /STAFF TARGETS/i.test(blob)) {
-      out = { kind: "split", date: excelDate(cell(cells, "A", 1)) || "", rooms: [], closed: [], unmatched: [], people: [], onDeck: [], unsure: [], preview: [], sheetPeople: [] };
-    } else if (blob.indexOf("CRNA SCHEDULE") >= 0 && blob.indexOf("NORTH TOWER") >= 0) out = parseWeekday(cells);
+    if (/CRNA NORTH/i.test(blob) && /STAFF TARGETS/i.test(blob)) out = parseSplitRoster(cells);
+    else if (blob.indexOf("CRNA SCHEDULE") >= 0 && blob.indexOf("NORTH TOWER") >= 0) out = parseWeekday(cells);
     else out = parseWeekend(cells);
     out.file = fileName || "";
     out.cells = cells;
@@ -1574,10 +1679,57 @@
     } catch (e) {}
   }
 
+  function applySplitRoster(res) {
+    g.onDeck = g.onDeck || [];
+    g.calls = g.calls || [];
+    var added = 0;
+    (res.people || []).forEach(function (p) {
+      if (!p || !p.name) return;
+      var hits = [];
+      try { hits = boardHits(p.name); } catch (e) { hits = []; }
+      if (hits.length) {
+        hits.forEach(function (h) {
+          if (h.where === "room" && g.roomStaff[h.cat] && g.roomStaff[h.cat][h.room] && !g.roomStaff[h.cat][h.room].shift && p.shift) {
+            g.roomStaff[h.cat][h.room].shift = p.shift;
+            g.roomStaff[h.cat][h.room].kind = p.kind || breakKind(p.shift);
+          }
+          if (h.where === "deck") {
+            (g.onDeck || []).forEach(function (d) {
+              if (d && namesMatch(d.name, p.name) && !d.shift && p.shift) {
+                d.shift = p.shift;
+                d.kind = p.kind || breakKind(p.shift);
+              }
+            });
+          }
+        });
+        return;
+      }
+      g.onDeck.push({
+        name: p.name, shift: p.shift || "", kind: p.kind || "none",
+        lastRoom: p.tower || "", role: p.orient ? "resident" : "float",
+        student: !!p.orient, intended: ""
+      });
+      added++;
+    });
+    (res.calls || []).forEach(function (c) {
+      if (!c || !c.name) return;
+      var exists = (g.calls || []).some(function (x) { return x && namesMatch(x.name, c.name) && x.lastRoom === c.lastRoom; });
+      if (exists) return;
+      g.calls.push({ name: cleanName(c.name), shift: c.shift || "", lastRoom: c.lastRoom || "", role: "call" });
+    });
+    publishStaff();
+    try { if (typeof saveShared === "function") saveShared(); } catch (e) {}
+    try { if (typeof refreshBoard === "function") refreshBoard(); } catch (e) {}
+    try { renderOnDeck(); } catch (e) {}
+    if (res) res.added = added;
+    var msg = added ? ("Roster merged — " + added + " not on the board yet") : "Roster matches the board";
+    try { if (typeof showToast === "function") showToast(msg); } catch (e) {}
+  }
+
   function applyAssignmentResult(res) {
     if (!res) return;
     if (res.kind === "split") {
-      try { if (typeof showToast === "function") showToast("That's the name roster, not the assignment grid"); } catch (e) {}
+      applySplitRoster(res);
       return;
     }
     try {
@@ -4599,8 +4751,9 @@
     (res.sheetPeople || []).forEach(function (p) {
       if (!p || !p.name) return;
       var hits = boardHits(p.name);
-      var anywhere = p.role === "wbf" || p.role === "breaker" || p.role === "midnight" || p.role === "call" || p.role === "latestay" || p.role === "resident" || p.role === "evening" || p.role === "night" || p.role === "srna" || p.role === "runner";
+      var anywhere = p.role === "wbf" || p.role === "breaker" || p.role === "midnight" || p.role === "call" || p.role === "latestay" || p.role === "resident" || p.role === "evening" || p.role === "night" || p.role === "srna" || p.role === "runner" || p.role === "extra" || p.role === "offsite" || p.role === "float";
       if (p.role === "shift" || parseShiftLabel(p.roomRaw)) {
+        if (hits.length) return;
         var guessed = (parseShiftLabel(p.roomRaw) || {}).shift || p.shift || "";
         add({
           reason: "shift",
@@ -5308,6 +5461,30 @@
     var ov = document.createElement("div");
     ov.id = "assign-upload-overlay";
     ov.className = "assign-upload-overlay";
+    if (res && res.kind === "split") {
+      ov.innerHTML =
+        '<div class="assign-upload-card">' +
+        "<h3>Roster merged</h3>" +
+        "<p class='assign-meta'>" + (file ? file.name : "Name roster") + "</p>" +
+        "<ul class='assign-stats'>" +
+        "<li>" + ((res.people || []).length) + " names on the roster</li>" +
+        "<li>" + (res.added || 0) + " added to the deck (not already placed)</li>" +
+        "<li>" + ((res.calls || []).length) + " call slots</li>" +
+        "</ul>" +
+        "<p class='assign-meta'>Rooms stay as they are. Upload the assignment grid first if the board is still empty.</p>" +
+        '<div class="assign-actions"><button type="button" class="assign-apply">Done</button></div></div>';
+      document.body.appendChild(ov);
+      function closeSplit(ev) {
+        if (ev) { try { ev.preventDefault(); ev.stopPropagation(); } catch (e) {} }
+        ov.remove();
+      }
+      ov.addEventListener("click", function (e) {
+        if (e.target === ov || (e.target.closest && e.target.closest(".assign-apply"))) closeSplit(e);
+      }, true);
+      var doneSplit = ov.querySelector(".assign-apply");
+      doneSplit.onclick = closeSplit;
+      return;
+    }
     var today = typeof todayStr === "function" ? todayStr() : "";
     var dateWarn = res.date && today && res.date !== today
       ? '<div class="assign-warn">Sheet date is ' + res.date + " (today is " + today + "). Apply anyway?</div>"
@@ -5377,6 +5554,10 @@
       var buf = await file.arrayBuffer();
       var res = await parseAssignmentWorkbook(buf, file.name);
       applyAssignmentResult(res);
+      if (res.kind === "split") {
+        showAssignSummary(res, file);
+        return;
+      }
       res.unsure = auditBoardVsSheet(res);
       if (res.unsure && res.unsure.length) showAssignReview(res, file);
       else showAssignSummary(res, file);
