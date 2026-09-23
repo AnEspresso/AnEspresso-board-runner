@@ -112,6 +112,8 @@
 
   function excelDate(val) {
     val = String(val || "").trim();
+    var iso = val.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (iso) return parseInt(iso[1], 10) + "-" + parseInt(iso[2], 10) + "-" + parseInt(iso[3], 10);
     var m = val.match(/(\d{1,2})[./](\d{1,2})[./](\d{2,4})/);
     if (m) {
       var mo = parseInt(m[1], 10), d = parseInt(m[2], 10), y = parseInt(m[3], 10);
@@ -411,8 +413,8 @@
       if (ROOM_INDEX[steRoom]) return ROOM_INDEX[steRoom];
       return { cat: "s100", room: steRoom };
     }
-    if (/^OB(@|\s|$)/i.test(s) && !/POC/i.test(s)) {
-      /* OB is a real assignment on weekend sheets */
+    if ((/^OB(@|\s|$)/i.test(s) || /^ENDO$/i.test(s) || /^MRI$/i.test(s)) && !/POC/i.test(s)) {
+      /* OB, Endo, and MRI are real weekend assignments */
     } else if (skipRoomLabel(s)) return null;
     var su = s.toUpperCase();
     su = su.replace(/^STE\.?\s*/, "OR ");
@@ -436,6 +438,8 @@
     else if (/^MRI IC\s*1\b/i.test(su)) su = "MRI IC 1";
     else if (/^MRI IC\s*2\b/i.test(su)) su = "MRI IC 2";
     if (su === "OB") su = "OB 1";
+    if (su === "ENDO") su = "ENDO 1";
+    if (su === "MRI") su = "MRI IH";
     var num = su.match(/^(\d{1,3})(?:\s*\(.*\))?$/);
     if (num) {
       var n = parseInt(num[1], 10);
@@ -1130,35 +1134,139 @@
     var dayTotals = [];
     var posSection = "";
     var pendingCall = false;
+    var inSrna = false;
     var extraF = [];
     var r;
 
-    function already(date, name) {
-      var k = dayKey(date) + "|" + nameKey(name);
+    function findPerson(date, name) {
+      var k = dayKey(date);
       for (var i = 0; i < people.length; i++) {
-        if (dayKey(people[i].date) + "|" + nameKey(people[i].name) === k) return true;
+        if (dayKey(people[i].date) !== k) continue;
+        if (namesMatch(people[i].name, name)) return people[i];
       }
-      return false;
+      return null;
+    }
+
+    function readAssign(assign) {
+      var raw = String(assign || "").trim();
+      var parts = raw.split(/\s*\/\s*/).map(function (x) { return x.trim(); }).filter(Boolean);
+      var roomPart = "";
+      var obTime = "";
+      var br = false;
+      var bareOb = false;
+      parts.forEach(function (p) {
+        if (/^BR$/i.test(p)) { br = true; return; }
+        var ob = p.match(/^OB\s*(?:@?\s*)?(\d{1,2})\s*([ap])m?$/i);
+        if (/^OB\b/i.test(p) && ob) { obTime = ob[1] + ob[2].toLowerCase(); return; }
+        if (/^OB$/i.test(p)) { bareOb = true; return; }
+        if (!roomPart) roomPart = p;
+      });
+      if (!parts.length && /^OB$/i.test(raw)) bareOb = true;
+      return { raw: raw, roomPart: roomPart, obTime: obTime, br: br, bareOb: bareOb && !obTime };
+    }
+
+    function callBits(raw) {
+      var s = String(raw || "").replace(/\s+/g, " ").trim();
+      if (!s || !/(\d\s*[ap]?m?\s*[-–]\s*\d|#\s*\d|10p)/i.test(s)) return [];
+      if (/please note|required|dial |password|hemo|trauma|total:|days$|evenings|general crna|crna call|resid|weekend srna|\(none\)/i.test(s)) return [];
+      var chunks = /[A-Za-z]{3,}.*\/.*[A-Za-z]{3,}/.test(s) ? s.split(/\s*\/\s*/) : [s];
+      var out = [];
+      chunks.forEach(function (chunk) {
+        if (!/(\d\s*[-–]\s*\d|#\s*\d|10p)/i.test(chunk)) return;
+        var name = chunk;
+        for (var pass = 0; pass < 3; pass++) {
+          var next = name.replace(/^(?:10p\s*[-–]\s*\d{3,4}|\d{1,2}\s*[ap]?m?\s*[-–]\s*\d{1,2}\s*[ap]?m?)\s*/i, "");
+          next = next.replace(/^#\s*\d+\s*:?\s*/, "").replace(/^[:\s]+/, "");
+          if (next === name) break;
+          name = next;
+        }
+        name = name.replace(/[:]+/g, " ").replace(/\s+/g, " ").trim();
+        if (!/[A-Za-z]{3,}/.test(name)) return;
+        var win = chunk.match(/(10p\s*[-–]\s*\d{3,4}|\d{1,2}\s*[ap]?m?\s*[-–]\s*\d{1,2}\s*[ap]?m?)/i);
+        var shift = /10p|11p/i.test(chunk) ? "N" : (/2\s*[-–]\s*11|2\s*[-–]\s*7|3p\s*[-–]\s*6a|7-11p/i.test(chunk) ? "E" : "D");
+        out.push({ name: name, shift: shift, label: win ? win[1].replace(/\s+/g, "") : "call" });
+      });
+      return out;
+    }
+
+    function addSrna(raw) {
+      var s = String(raw || "").replace(/\s+/g, " ").trim();
+      if (!s || /^\(none\)$/i.test(s)) return;
+      if (/resid|crna call|general crna/i.test(s)) return;
+      s = s.replace(/^(?:EVES|MN)\s*:\s*/i, "");
+      var shift = "";
+      var name = s;
+      var m = s.match(/^(\d{1,2}\s*[ap]?m?\s*[-–]\s*\d{1,2}\s*[ap]?m?)\s+(.+)$/i);
+      if (m) { shift = m[1].replace(/\s+/g, ""); name = m[2]; }
+      else {
+        m = s.match(/^([DdEeSsNnWwTt])\s+(.+)$/);
+        if (m) { shift = m[1]; name = m[2]; }
+      }
+      var tr = name.match(/^(.*?)(\d{1,2}\s*[ap]?m?\s*[-–]\s*\d{1,2}\s*[ap]?m?)\s*$/i);
+      if (tr && /[A-Za-z]{3,}/.test(tr[1])) {
+        name = tr[1].trim();
+        if (!shift) shift = tr[2].replace(/\s+/g, "");
+      }
+      name = name.replace(/[:]+/g, " ").trim();
+      if (!/[A-Za-z]{3,}/.test(name) || isJunkStaff(name, shift)) return;
+      addPerson({ date: currentDate, name: name, shift: shift, assign: "", role: "srna", student: true });
     }
 
     function addPerson(opts) {
       if (!opts || !opts.name || isJunkStaff(opts.name, opts.shift)) return;
-      if (already(opts.date, opts.name)) return;
-      var assign = String(opts.assign || "").trim();
-      var at3p = /@\s*3\s*p/i.test(assign);
-      var assignClean = assign.replace(/@\s*3\s*p.*/i, "").trim();
-      var bareOb = /^OB$/i.test(assignClean);
-      var loc = (!bareOb && assignClean && !/^BR$/i.test(assignClean)) ? normalizeRoom(assignClean) : null;
+      var parsed = readAssign(opts.assign);
+      if (parsed.bareOb && !parsed.obTime) {
+        var lateM = String(opts.shift || "").match(/(\d{1,2})\s*([ap])?/i);
+        if (lateM) {
+          var lh = parseInt(lateM[1], 10);
+          var lap = (lateM[2] || "").toLowerCase();
+          if (lap === "p" && lh < 12) lh += 12;
+          if (!lap && lh > 0 && lh <= 7) lh += 12;
+          if (lh >= 15) {
+            parsed.obTime = lateM[1] + (lateM[2] || "p");
+            parsed.bareOb = false;
+          }
+        }
+      }
+      var noted = /^(MRI\s*ST|ST\s*MRI)$/i.test(parsed.roomPart || parsed.raw);
+      var loc = (!parsed.bareOb && parsed.roomPart && !parsed.br) ? normalizeRoom(parsed.roomPart) : null;
+      if (noted) loc = null;
       var role = opts.role || "";
-      if (/^BR$/i.test(assignClean) || /^BR$/i.test(assign)) role = "breaker";
-      if (at3p && !role) role = "float";
+      if (parsed.br) role = "breaker";
+      if (parsed.obTime && !role) role = "float";
+      var prev = findPerson(opts.date, opts.name);
+      if (prev) {
+        var incomingRoom = !!(loc && loc.room) || parsed.bareOb || parsed.br;
+        var prevRoom = !!(prev.room || prev.ob || prev.role === "breaker");
+        if (incomingRoom && !prevRoom && role !== "call" && role !== "midnight" && role !== "srna") {
+          if (nameKey(prev.name) === nameKey(opts.name)) prev.name = cleanName(opts.name);
+          prev.shift = opts.shift || prev.shift;
+          prev.assign = parsed.raw || prev.assign;
+          prev.cat = loc && loc.cat;
+          prev.room = loc && loc.room;
+          prev.kind = opts.kind || prev.kind;
+          prev.role = role;
+          prev.at3p = !!parsed.obTime;
+          prev.ob = parsed.bareOb && !parsed.obTime;
+          prev.arrival = parsed.obTime || "";
+          prev.noted = noted;
+          prev.intended = parsed.obTime ? "OB" : (prev.intended || "");
+        } else if (role === "call" && !prev.room && !prev.ob && prev.role !== "breaker" && prev.role !== "srna") {
+          prev.role = "call";
+          prev.shift = opts.shift || prev.shift;
+          prev.assign = parsed.raw || prev.assign;
+        }
+        return;
+      }
       people.push({
         date: opts.date, tower: opts.tower || currentTower,
         shift: opts.shift || "", name: cleanName(opts.name),
-        assign: assign, cat: loc && loc.cat, room: loc && loc.room,
+        assign: parsed.raw, cat: loc && loc.cat, room: loc && loc.room,
         closed: false, kind: opts.kind || breakKind(opts.shift),
         early: !!opts.early, orient: !!opts.orient, student: !!opts.student,
-        role: role, at3p: at3p, ob: bareOb && !at3p, intended: at3p ? "OB" : (opts.intended || "")
+        role: role, at3p: !!parsed.obTime, ob: parsed.bareOb && !parsed.obTime,
+        arrival: parsed.obTime || "", noted: noted,
+        intended: parsed.obTime ? "OB" : (opts.intended || "")
       });
     }
 
@@ -1174,12 +1282,14 @@
         currentTower = "NT";
         lastShift = "";
         pendingCall = false;
+        inSrna = false;
         continue;
       }
       if (/South Tower/i.test(b) || /South Tower/i.test(a)) {
         currentTower = "ST";
         lastShift = "";
         pendingCall = false;
+        inSrna = false;
         continue;
       }
       if (/^Days$/i.test(e)) posSection = "day";
@@ -1193,21 +1303,23 @@
         }
       }
 
-      if (/CRNA Call/i.test(e) || /CRNA Call/i.test(b)) { pendingCall = true; continue; }
-      if (pendingCall) {
-        var callNm = "";
-        if (e && /[A-Za-z]{3,}/.test(e) && !/liver|resid|call|note/i.test(e)) callNm = e;
-        else if (b && /[A-Za-z]{3,}/.test(b) && !/CRNA|tower|shift/i.test(b)) callNm = b;
-        if (callNm) {
-          addPerson({ date: currentDate, name: callNm, shift: "", assign: "call", role: "call" });
+      if (/Weekend SRNA/i.test(e)) inSrna = true;
+      if (inSrna && e && !/Weekend SRNA/i.test(e)) {
+        if (/resid|crna call|general crna/i.test(e)) inSrna = false;
+        else addSrna(e);
+      }
+
+      if (/CRNA Call/i.test(e) || /CRNA Call/i.test(b)) pendingCall = true;
+      if (pendingCall && e && !/CRNA Call/i.test(e)) {
+        var bare = String(e).replace(/\s+/g, " ").trim();
+        if (/^[A-Za-z][A-Za-z.'’-]+(?:\s+[A-Za-z][A-Za-z.'’-]+)+$/.test(bare) && !/liver|resid|call|note|days|evenings|weekend|srna|please|total|tower|hemo|trauma/i.test(bare)) {
+          addPerson({ date: currentDate, name: bare, shift: "", assign: "call", role: "call" });
           pendingCall = false;
-        }
+        } else if (callBits(e).length) pendingCall = false;
       }
-      var callM = String(e || "").match(/^(6\s*-?\s*3|2\s*-?\s*11|10p\s*-?\s*0?7:?30)\s*#?\s*\d*\s*:?\s*(.+)$/i);
-      if (callM && /[A-Za-z]{3,}/.test(callM[2]) && !/^[A-Z]{2,}\s+\d/.test(callM[2])) {
-        var cs = /10p/i.test(callM[1]) ? "N" : (/2/.test(callM[1]) ? "E" : "D");
-        addPerson({ date: currentDate, name: callM[2], shift: cs, assign: callM[1].replace(/\s+/g, ""), role: "call" });
-      }
+      if (!inSrna) callBits(e).forEach(function (bit) {
+        addPerson({ date: currentDate, name: bit.name, shift: bit.shift, assign: bit.label, role: "call" });
+      });
 
       if (f && looksLikeShiftCell(f.split(/\s+/)[0]) && /[A-Za-z]{3,}/.test(f)) {
         extraF.push({ date: currentDate, raw: f });
@@ -1215,6 +1327,13 @@
 
       if (/^shift$/i.test(a) || /^CRNA$/i.test(b)) continue;
       if (/^(check hemacue|trauma rm)/i.test(a)) continue;
+      if (a && (!b || /^CRNA$/i.test(b))) {
+        var glued = String(a).trim().match(/^(\S+)\s+([A-Za-z].+)$/);
+        if (glued && (looksLikeShiftCell(glued[1]) || parseShiftLabel(glued[1].replace(/\s+/g, "")))) {
+          a = glued[1];
+          b = glued[2];
+        }
+      }
 
       var shiftCell = compactShiftCell(a);
       var hasShift = looksLikeShiftCell(shiftCell);
@@ -1261,9 +1380,7 @@
       else pickDay = datesSeen.slice().sort(function (a, b) { return dateNum(b) - dateNum(a); })[0] || "";
     }
     var dayPeople = people.filter(function (p) {
-      if (!pickDay) return true;
-      var dk = dayKey(p.date);
-      return !dk || dk === pickDay;
+      return pickDay && dayKey(p.date) === pickDay;
     });
     today = pickDay || today;
 
@@ -1292,14 +1409,16 @@
       if (p.role === "breaker") { take(p, { role: "breaker", lastRoom: "BR" }); return; }
       if (p.role === "call") { take(p, { role: "call", lastRoom: p.assign || "call" }); return; }
       if (p.role === "midnight") { take(p, { role: "midnight", lastRoom: "night" }); return; }
-      if (p.at3p) { take(p, { role: "float", lastRoom: "OB @3p", intended: "OB" }); return; }
+      if (p.role === "srna") { take(p, { role: "srna", lastRoom: "SRNA" }); return; }
+      if ((p.at3p || p.arrival) && !(p.cat && p.room)) { take(p, { role: p.role === "breaker" ? "breaker" : "float", lastRoom: "OB @" + (p.arrival || "3p"), intended: "OB" }); return; }
       if (p.ob || (p.room && /^OB$/i.test(p.room))) { obQueue.push(p); return; }
+      if (p.noted) { take(p, { role: "float", lastRoom: p.assign || "MRI" }); return; }
       if (p.cat && p.room) {
         rooms.push({ cat: p.cat, room: p.room, shift: p.shift, name: p.name, closed: false, kind: p.kind, student: !!p.student });
         used[nameKey(p.name)] = 1;
         return;
       }
-      if (p.assign && !/^BR$/i.test(p.assign) && p.role !== "call") unmatched.push({ room: p.assign, staff: p.name });
+      if (p.assign && !/^BR$/i.test(p.assign) && !/^call$/i.test(p.assign) && p.role !== "call" && p.role !== "srna" && !p.arrival && !p.noted) unmatched.push({ room: p.assign, staff: p.name });
       take(p, { role: p.role || "float" });
     });
     var obSlots = ["OB 1", "OB 2"];
