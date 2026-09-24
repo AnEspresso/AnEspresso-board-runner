@@ -205,8 +205,9 @@
   function chipName(name) {
     var last = lastName(name);
     if (!last) return "";
-    if ((lastNameCounts()[last.toLowerCase()] || 0) < 2) return last;
     var first = firstName(name);
+    if (last.length < 2 && first) return first + " " + last.toUpperCase() + ".";
+    if ((lastNameCounts()[last.toLowerCase()] || 0) < 2) return last;
     if (!first) return last;
     return first.charAt(0).toUpperCase() + ". " + last;
   }
@@ -2005,6 +2006,25 @@
       (hadRows ? '<div class="breakq-had-label">Already had it</div><div class="breakq-list breakq-had">' + hadRows + "</div>" : "");
   }
 
+  function updateRunnerDrawerPeek(text) {
+    var el = document.getElementById("runner-drawer-peek");
+    if (el) el.textContent = text || "Runner tools";
+    var run = document.getElementById("desk-runners");
+    if (!run) {
+      var btn = document.getElementById("board-desk-btn");
+      if (btn) {
+        run = document.createElement("span");
+        run.className = "desk-runners";
+        run.id = "desk-runners";
+        btn.appendChild(run);
+      }
+    }
+    if (run) {
+      var line = runnerLineText();
+      run.textContent = line;
+      run.style.display = line ? "block" : "none";
+    }
+  }
   function runnerDrawerOpen() {
     var d = document.getElementById("runner-drawer");
     return !!(d && d.classList.contains("open"));
@@ -2018,9 +2038,12 @@
     try { localStorage.setItem("anespresso_runner_drawer", open ? "open" : "closed"); } catch (e) {}
   }
 
-  function updateRunnerDrawerPeek(text) {
-    var el = document.getElementById("runner-drawer-peek");
-    if (el) el.textContent = text || "Runner tools";
+  function runnerLineText() {
+    var r = (g.assignmentMeta && g.assignmentMeta.runners) || {};
+    var bits = [];
+    if (r.nt) bits.push("NT " + r.nt);
+    if (r.st) bits.push("ST " + r.st);
+    return bits.join(" · ");
   }
 
   function bindRunnerDrawerSwipe(handle) {
@@ -2340,12 +2363,15 @@
           : (sel
             ? '<div class="ondeck-hint">Tap a room to place them · tap the chip again to cancel</div>'
             : '<div class="ondeck-hint">Longest idle first · tap someone, then tap a room</div>')));
+    var run = runnerLineText();
+    var runHtml = run ? '<div class="ondeck-runners">' + escHtml(run) + "</div>" : "";
     card.innerHTML =
       '<div class="cat-header-row"><div class="cup-indicator">☕</div><div class="cat-info">' +
       '<div class="cat-name">On deck</div>' +
       '<div class="cat-full-name">Free now · longest idle first</div></div>' +
       '<div class="cat-progress-label"><div class="cat-pct">' + here.length + '</div>' +
       '<div class="cat-count">now</div></div></div>' +
+      runHtml +
       hint +
       '<div class="ondeck-grid">' + (hereChips || '<span class="roster-empty">Nobody free right now</span>') + "</div>" +
       laterBtn +
@@ -2954,7 +2980,18 @@
     }
     var used = {};
     return hours.map(function (w) {
-      return { wave: w, rooms: collectLeavingAt(w, used) };
+      var rooms = collectLeavingAt(w, used);
+      var seen = {};
+      rooms.forEach(function (r) {
+        if (r.out && r.out.name) seen[nameKey(r.out.name)] = 1;
+      });
+      lateStayRows(w).forEach(function (row) {
+        var k = nameKey(row.out && row.out.name);
+        if (!k || seen[k]) return;
+        seen[k] = 1;
+        rooms.push(row);
+      });
+      return { wave: w, rooms: rooms };
     }).filter(function (block) { return block.rooms.length; });
   }
 
@@ -3798,7 +3835,9 @@
     var callBlock = callChips
       ? '<div class="assign-cat-label">Call</div><div class="roster-grid">' + callChips + "</div>"
       : "";
+    var run = runnerLineText();
     pane.innerHTML =
+      (run ? '<div class="ondeck-runners">' + escHtml(run) + "</div>" : "") +
       '<input id="desk-people-q" class="desk-people-search" type="search" placeholder="Search a name" autocomplete="off" autocorrect="off" spellcheck="false">' +
       '<button type="button" class="desk-add-btn" id="desk-add-staff">Add someone who came in</button>' +
       '<div class="assign-cat-label">Free now · longest idle first</div>' +
@@ -5964,8 +6003,10 @@
         "body.staff-view-jobs #board{display:none;}" +
         ".staff-jobs-slot{margin-top:8px;}" +
         ".runner-drawer.desk-only{padding:8px 14px 10px;background:#fff;border-bottom:1px solid rgba(160,98,42,.12);}" +
-        ".board-desk-btn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border:none;border-radius:12px;background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;cursor:pointer;font:inherit;text-align:left;box-shadow:0 1px 3px rgba(122,78,45,.2);}" +
+        ".board-desk-btn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:12px 14px;border:none;border-radius:12px;background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;cursor:pointer;font:inherit;text-align:left;box-shadow:0 1px 3px rgba(122,78,45,.2);}" +
         ".board-desk-btn .desk-title{font-size:15px;font-weight:800;}" +
+        ".board-desk-btn .desk-runners{flex:1 0 100%;font-size:12px;font-weight:700;margin-top:2px;}" +
+        ".ondeck-runners{padding:0 12px 8px;font-size:12px;font-weight:700;color:#7A4E2D;}" +
         ".board-desk-btn .desk-peek{font-size:11px;font-weight:600;opacity:.9;}" +
         ".desk-upload-btn{width:100%;margin:0 0 8px;padding:8px;border-radius:8px;border:1.5px solid rgba(160,98,42,.25);background:#fff;color:#7A4E2D;font-size:12px;font-weight:700;cursor:pointer;}" +
         ".desk-clear-btn{width:100%;margin:0 0 10px;padding:8px;border-radius:8px;border:1.5px dashed rgba(160,98,42,.35);background:transparent;color:#9A6A38;font-size:12px;font-weight:700;cursor:pointer;}" +
