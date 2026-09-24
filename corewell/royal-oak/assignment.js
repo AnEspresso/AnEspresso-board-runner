@@ -6126,11 +6126,12 @@
     applyStaffView();
     var view = getStaffView();
     var html = '<div class="breaker-panel-inner breaker-jobs">';
+    html += '<div class="my-assign-room">Breaker</div>';
+    html += '<div class="my-site-label">' +
+      (view === "jobs" ? "Giving breaks" : "No room right now") +
+      "</div>";
     html += staffViewToggleHtml();
-    html += '<div><div class="my-site-name">Breaker</div><div class="my-site-label">' +
-      (view === "jobs" ? "Breaks for this window · switch to Board anytime" : "Whole board · switch to Breaks for the due list") +
-      "</div></div>";
-    if (view !== "jobs") html += '<div class="job-empty">Use the board below. Breaks lists who is due.</div>';
+    if (view !== "jobs") html += '<div class="job-empty">The board is below. Breaks lists who is due.</div>';
     html += "</div>";
     panel.innerHTML = html;
   }
