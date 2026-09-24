@@ -1602,19 +1602,36 @@
 
   function tintRoomBtn(btn, catId, room) {
     if (!btn) return;
-    btn.classList.remove("kind-late", "kind-dinner");
-    var afterClose = false;
-    try {
-      if (typeof currentWindow === "number" && currentWindow === 3) afterClose = true;
-      else if (hospitalMins() >= 15 * 60 + 30) afterClose = true;
-    } catch (e) {}
-    if (!afterClose) return;
+    btn.classList.remove("kind-late", "kind-dinner", "not-round");
+    if (!hospitalAfterClose()) return;
     var k = roomBreakKind(catId, room);
-    if (k === "late" || k === "dinner") btn.classList.add("kind-" + k);
+    var owed = k === "late" || k === "dinner";
+    var had = false;
+    try { had = typeof isDone === "function" && isDone(currentWindow, catId, room); } catch (e) {}
+    if (owed && !had) btn.classList.add("kind-" + k);
+    else btn.classList.add("not-round");
+  }
+
+  function ensureRoundLegend() {
+    var board = document.getElementById("board");
+    if (!board) return;
+    var el = document.getElementById("round-legend");
+    var show = hospitalAfterClose();
+    try { if (document.body.classList.contains("staff-view-jobs")) show = false; } catch (e) {}
+    if (!show) { if (el) el.remove(); return; }
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "round-legend";
+      el.className = "round-legend";
+      el.innerHTML = '<span><i class="lg-late"></i>Late</span><span><i class="lg-dinner"></i>Dinner</span><span><i class="lg-off"></i>Not this round</span>';
+    }
+    if (board.firstChild !== el) board.insertBefore(el, board.firstChild);
   }
 
   g.tintRoomBtn = tintRoomBtn;
   g.roomBreakKind = roomBreakKind;
+  g.hospitalAfterClose = hospitalAfterClose;
+  g.ensureRoundLegend = ensureRoundLegend;
 
   function hospitalAfterClose() {
     try {
@@ -1649,6 +1666,7 @@
     document.body.classList.toggle("staff-view-jobs", jobs);
     document.body.classList.toggle("staff-view-board", !jobs);
     try { mountBreakList(); } catch (e) {}
+    try { ensureRoundLegend(); } catch (e) {}
   }
 
   function setStaffView(v) {
@@ -6043,6 +6061,13 @@
         ".room-btn.kind-dinner.done{background:#4A2E14;border-color:#2C1A0E;color:#FDF6EC;opacity:.55;box-shadow:none;}" +
         ".room-btn.kind-dinner.done .staff-name{text-decoration:line-through;color:#FDF6EC;}" +
         ".room-btn.kind-late.done::after,.room-btn.kind-dinner.done::after{content:' had it';font-size:9px;font-weight:900;letter-spacing:.02em;}" +
+        ".room-btn.not-round{opacity:.38;}" +
+        ".room-btn.not-round.done{background:#F7F1EA;border-color:rgba(160,98,42,.16);box-shadow:none;}" +
+        ".round-legend{display:flex;gap:14px;align-items:center;font-size:11px;font-weight:800;color:#7A4E2D;padding:2px 2px 8px;}" +
+        ".round-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;}" +
+        ".lg-late{background:#C8781A;}" +
+        ".lg-dinner{background:#7A4E2D;}" +
+        ".lg-off{background:#D9D0C6;}" +
         ".staff-view-toggle{display:flex;gap:6px;margin:0 0 8px;}" +
         ".staff-view-btn{flex:1;padding:9px 10px;min-height:40px;border-radius:10px;border:1.5px solid rgba(160,98,42,.25);background:#FEF6EC;color:#7A4E2D;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;}" +
         ".staff-view-btn.on{background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;border-color:#7A4E2D;}" +
