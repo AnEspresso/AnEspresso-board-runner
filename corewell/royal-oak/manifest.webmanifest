@@ -1,7 +1,7 @@
 {
-  "name": "AnEspresso!",
-  "short_name": "AnEspresso",
-  "description": "Anesthesia Break Coverage",
+  "name": "AnEspresso — Corewell Royal Oak",
+  "short_name": "Royal Oak",
+  "description": "Corewell Royal Oak anesthesia break board",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
