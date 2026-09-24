@@ -2863,7 +2863,7 @@
   function sortReliefRooms(rooms) {
     rooms.sort(function (a, b) {
       if (!!a.latestay !== !!b.latestay) return a.latestay ? 1 : -1;
-      if (a.latestay && b.latestay) return (a.lsN || 0) - (b.lsN || 0);
+      if (a.latestay && b.latestay) return (b.lsN || 0) - (a.lsN || 0);
       var da = catOrder(a.cat), db = catOrder(b.cat);
       if (da !== db) return da - db;
       return String(a.room).localeCompare(String(b.room), undefined, { numeric: true });
@@ -2991,7 +2991,7 @@
         seen[k] = 1;
         rooms.push(row);
       });
-      return { wave: w, rooms: rooms };
+      return { wave: w, rooms: sortReliefRooms(rooms) };
     }).filter(function (block) { return block.rooms.length; });
   }
 
