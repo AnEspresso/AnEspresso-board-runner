@@ -1648,6 +1648,7 @@
     } catch (e) {}
     document.body.classList.toggle("staff-view-jobs", jobs);
     document.body.classList.toggle("staff-view-board", !jobs);
+    try { mountBreakList(); } catch (e) {}
   }
 
   function setStaffView(v) {
@@ -1662,7 +1663,7 @@
     var v = getStaffView();
     return '<div class="staff-view-toggle" role="tablist">' +
       '<button type="button" class="staff-view-btn' + (v === "board" ? " on" : "") + '" onclick="setStaffView(\'board\')">Board</button>' +
-      '<button type="button" class="staff-view-btn' + (v === "jobs" ? " on" : "") + '" onclick="setStaffView(\'jobs\')">Jobs</button>' +
+      '<button type="button" class="staff-view-btn' + (v === "jobs" ? " on" : "") + '" onclick="setStaffView(\'jobs\')">Breaks</button>' +
       "</div>";
   }
 
@@ -1704,6 +1705,67 @@
     return items;
   }
 
+  function breakBucket(it) {
+    var cat = it.cat || "";
+    var room = String(it.room || "");
+    var roomKey = room.replace(/\s+/g, " ").toUpperCase();
+    if (roomKey === "CT" || roomKey === "US") return { region: "either", tower: "ctus" };
+    if (roomKey === "MRI 1ST" || roomKey === "1ST MRI" || roomKey === "VCU" || roomKey === "BMB") return { region: "south", tower: "snora" };
+    if (cat === "st" || cat === "s100") return { region: "south", tower: cat };
+    if (cat === "nt" || cat === "ccs" || cat === "endo" || cat === "ep" || cat === "nora") return { region: "north", tower: cat };
+    return { region: "other", tower: cat || "other" };
+  }
+
+  function groupedBreakHtml(items, rowKind) {
+    var regions = [
+      { id: "north", label: "North", towers: ["nt", "ccs", "endo", "ep", "nora"] },
+      { id: "south", label: "South", towers: ["st", "s100", "snora"] },
+      { id: "either", label: "CT / US · either tower", towers: ["ctus"] },
+      { id: "other", label: "OB", towers: ["fbc", "other"] }
+    ];
+    var towerName = {
+      nt: "NT Tower", ccs: "CCS", endo: "Endo", ep: "EP", nora: "IR, MRI, PB, and other north sites",
+      st: "ST Tower", s100: "Ste. 100", snora: "MRI 1ST, VCU, BMB", ctus: "CT / US", fbc: "FBC", other: "Other"
+    };
+    var html = "";
+    regions.forEach(function (reg) {
+      var chunks = "";
+      reg.towers.forEach(function (tower) {
+        var rows = items.filter(function (it) {
+          var b = breakBucket(it);
+          return b.region === reg.id && b.tower === tower;
+        });
+        rows.sort(function (a, b) {
+          return String(a.room).localeCompare(String(b.room), undefined, { numeric: true });
+        });
+        if (!rows.length) return;
+        chunks += '<div class="job-sec">' + towerName[tower] + "</div>";
+        rows.forEach(function (it) {
+          var label = (it.name ? escHtml(chipName(it.name)) + " · " : "") + escHtml(it.room);
+          var sub = rowKind === "had" ? "had it" : (it.kind === "dinner" ? "dinner" : (it.kind === "late" ? "late" : (function () {
+            try { return (typeof WIN_LABELS !== "undefined" && WIN_LABELS[currentWindow]) || "due"; } catch (e) { return "due"; }
+          })()));
+          var kind = rowKind === "had" ? "had" : (it.kind === "dinner" ? "dinner" : (it.kind === "late" ? "late" : ""));
+          var click = rowKind === "had" ? "" : "toggleRoom('" + it.cat + "','" + String(it.room).replace(/'/g, "\\'") + "')";
+          chunks += jobRow(label, sub, click, kind);
+        });
+      });
+      if (chunks) html += '<div class="job-region">' + reg.label + "</div>" + chunks;
+    });
+    return html;
+  }
+
+  function jobRow(label, sub, onclick, kind) {
+    var cls = "job-row";
+    if (kind === "late") cls += " job-late";
+    if (kind === "dinner") cls += " job-dinner";
+    if (kind === "urgent") cls += " job-urgent";
+    if (kind === "had") cls += " job-info";
+    var inner = '<span class="job-main">' + label + "</span>" +
+      (sub ? '<span class="job-sub">' + sub + "</span>" : "");
+    if (!onclick) return '<div class="' + cls + '">' + inner + "</div>";
+    return '<button type="button" class="' + cls + '" onclick="' + onclick + '">' + inner + "</button>";
+  }
   function staffJobsHtml() {
     var urgent = [];
     try {
@@ -1714,22 +1776,6 @@
     var items = collectWindowDue();
     var due = items.filter(function (it) { return !it.given; });
     var had = items.filter(function (it) { return it.given; });
-    function jobRow(label, sub, onclick, kind) {
-      var cls = "job-row";
-      if (kind === "late") cls += " job-late";
-      if (kind === "dinner") cls += " job-dinner";
-      if (kind === "urgent") cls += " job-urgent";
-      if (kind === "had") cls += " job-info";
-      var inner = '<span class="job-main">' + label + "</span>" +
-        (sub ? '<span class="job-sub">' + sub + "</span>" : "");
-      if (!onclick) return '<div class="' + cls + '">' + inner + "</div>";
-      return '<button type="button" class="' + cls + '" onclick="' + onclick + '">' + inner + "</button>";
-    }
-    function winSub(it) {
-      if (it.kind === "dinner") return "dinner";
-      if (it.kind === "late") return "late";
-      try { return (typeof WIN_LABELS !== "undefined" && WIN_LABELS[currentWindow]) || "due"; } catch (e) { return "due"; }
-    }
     var html = "";
     if (urgent.length) {
       html += '<div class="job-sec">Need a break now</div>';
@@ -1741,17 +1787,11 @@
     }
     if (due.length) {
       html += '<div class="job-sec">Due this window · ' + due.length + "</div>";
-      due.forEach(function (it) {
-        var label = (it.name ? escHtml(chipName(it.name)) + " · " : "") + escHtml(it.room);
-        html += jobRow(label, winSub(it), "toggleRoom('" + it.cat + "','" + String(it.room).replace(/'/g, "\\'") + "')", it.kind === "dinner" ? "dinner" : (it.kind === "late" ? "late" : ""));
-      });
+      html += groupedBreakHtml(due, "due");
     }
     if (had.length) {
-      html += '<div class="job-sec">Already had it · ' + had.length + "</div>";
-      had.forEach(function (it) {
-        var label = (it.name ? escHtml(chipName(it.name)) + " · " : "") + escHtml(it.room);
-        html += jobRow(label, "had it", "", "had");
-      });
+      html += '<div class="job-region">Already had it · ' + had.length + "</div>";
+      html += groupedBreakHtml(had, "had");
     }
     if (!urgent.length && !due.length) {
       html += '<div class="job-empty">' + (hospitalAfterClose() ? "No late or dinner breaks due. Switch to Board to see rooms." : "No rooms due this window. Switch to Board to see everyone.") + "</div>";
@@ -1759,21 +1799,27 @@
     return html;
   }
 
-  function paintCrnaJobs() {
-    var panel = document.getElementById("my-site-panel");
-    if (!panel) return;
+  function mountBreakList() {
+    var board = document.getElementById("board");
     var slot = document.getElementById("staff-jobs-slot");
-    if (getStaffView() !== "jobs") {
+    var on = false;
+    try { on = document.body.classList.contains("staff-view-jobs") && currentRole === "crna"; } catch (e) {}
+    if (!on) {
       if (slot) slot.remove();
       return;
     }
+    if (!board) return;
     if (!slot) {
       slot = document.createElement("div");
       slot.id = "staff-jobs-slot";
       slot.className = "staff-jobs-slot";
-      panel.appendChild(slot);
     }
+    if (slot.parentNode !== board) board.insertBefore(slot, board.firstChild);
     slot.innerHTML = staffJobsHtml();
+  }
+
+  function paintCrnaJobs() {
+    mountBreakList();
   }
 
   function publishStaff() {
@@ -6000,8 +6046,9 @@
         ".staff-view-toggle{display:flex;gap:6px;margin:0 0 8px;}" +
         ".staff-view-btn{flex:1;padding:9px 10px;min-height:40px;border-radius:10px;border:1.5px solid rgba(160,98,42,.25);background:#FEF6EC;color:#7A4E2D;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;}" +
         ".staff-view-btn.on{background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;border-color:#7A4E2D;}" +
-        "body.staff-view-jobs #board{display:none;}" +
-        ".staff-jobs-slot{margin-top:8px;}" +
+        "body.staff-view-jobs #board .cat-card,body.staff-view-jobs #board .ondeck-card{display:none;}" +
+        ".staff-jobs-slot{margin-top:4px;padding-bottom:24px;}" +
+        ".job-region{font-family:Georgia,'Times New Roman',serif;font-size:18px;font-weight:900;color:#1E0E04;margin:16px 0 2px;}" +
         ".runner-drawer.desk-only{padding:8px 14px 10px;background:#fff;border-bottom:1px solid rgba(160,98,42,.12);}" +
         ".board-desk-btn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:12px 14px;border:none;border-radius:12px;background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;cursor:pointer;font:inherit;text-align:left;box-shadow:0 1px 3px rgba(122,78,45,.2);}" +
         ".board-desk-btn .desk-title{font-size:15px;font-weight:800;}" +
@@ -6081,10 +6128,9 @@
     var html = '<div class="breaker-panel-inner breaker-jobs">';
     html += staffViewToggleHtml();
     html += '<div><div class="my-site-name">Breaker</div><div class="my-site-label">' +
-      (view === "jobs" ? "Jobs for this window · switch to Board anytime" : "Whole board · switch to Jobs for a due list") +
+      (view === "jobs" ? "Breaks for this window · switch to Board anytime" : "Whole board · switch to Breaks for the due list") +
       "</div></div>";
-    if (view === "jobs") html += staffJobsHtml();
-    else html += '<div class="job-empty">Use the board below. Jobs lists who is due.</div>';
+    if (view !== "jobs") html += '<div class="job-empty">Use the board below. Breaks lists who is due.</div>';
     html += "</div>";
     panel.innerHTML = html;
   }
