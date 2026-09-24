@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Board after 3 — three ways</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#1A0F07;color:#F6E7D4;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
+  main{max-width:430px;margin:0 auto;padding:18px 14px 48px}
+  h1{font-family:Georgia,"Times New Roman",serif;font-size:22px;margin:0 0 6px}
+  .lede{font-size:14px;line-height:1.45;color:#C8B09A;margin:0 0 18px}
+  .tag{font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:#E8A020;margin:0 0 4px}
+  .why{font-size:13px;line-height:1.4;color:#C8B09A;margin:0 0 10px}
+  .ver{margin:0 0 28px}
+  .phone{background:#FBF0E2;color:#1E0E04;border-radius:22px;padding:12px;box-shadow:0 12px 40px rgba(0,0,0,.35)}
+  .card{background:#fff;border:1.5px solid rgba(160,98,42,.22);border-radius:16px;padding:12px 10px 10px}
+  .head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px}
+  .tower{font-family:Georgia,serif;font-size:18px;font-weight:700}
+  .sub{font-size:11px;color:#9A6A38}
+  .count{text-align:right;font-family:Georgia,serif;font-size:18px;font-weight:700;color:#C8781A;line-height:1}
+  .count span{display:block;font-family:-apple-system,sans-serif;font-size:10px;font-weight:700;color:#9A6A38;margin-top:2px}
+  .legend{display:flex;gap:10px;font-size:10px;font-weight:800;color:#7A4E2D;margin:0 0 8px}
+  .legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;vertical-align:0}
+  .grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+  .r{border-radius:10px;border:1.5px solid rgba(160,98,42,.16);background:#F7F1EA;min-height:52px;padding:5px 3px 4px;text-align:center}
+  .rm{font-size:9px;font-weight:800;color:#9A6A38;letter-spacing:.02em}
+  .nm{font-size:10px;font-weight:800;color:#1E0E04;margin-top:2px;line-height:1.15}
+  .due-late{background:#FFF0D8;border-color:#C8781A}
+  .due-dinner{background:#7A4E2D;border-color:#7A4E2D}
+  .due-dinner .rm,.due-dinner .nm,.due-dinner .tagw{color:#FDF6EC}
+  .quiet{opacity:.38}
+  .had{background:#F3EDE6;border-color:transparent}
+  .had .nm{text-decoration:line-through;color:#9A6A38}
+  .tagw{display:block;margin-top:2px;font-size:8px;font-weight:800;letter-spacing:.06em}
+  .due-late .tagw{color:#A05A10}
+  .split-label{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#7A4E2D;margin:8px 0 6px}
+  .split-label.first{margin-top:0}
+</style>
+</head>
+<body>
+<main>
+  <h1>After 3, only the people who still owe a break should be loud.</h1>
+  <p class="lede">Right now every room shouts. Late is a faint cream. Dinner is brown. Everyone else looks almost the same, and the tower still says 0 of 26. After 3, most of those 26 are not in this round.</p>
+
+  <section class="ver">
+    <p class="tag">A · Turn the rest down</p>
+    <p class="why">Keep the map. Late and dinner stay full strength. Everyone who does not owe one fades. The count is only the people still due.</p>
+    <div class="phone"><div class="card">
+      <div class="head"><div><div class="tower">NT Tower</div><div class="sub">North Tower ORs</div></div><div class="count">9<span>still need one</span></div></div>
+      <div class="legend"><span><i style="background:#C8781A"></i>Late</span><span><i style="background:#7A4E2D"></i>Dinner</span><span><i style="background:#D9D0C6"></i>Not this round</span></div>
+      <div class="grid" id="a"></div>
+    </div></div>
+  </section>
+
+  <section class="ver">
+    <p class="tag">B · Still due, then everyone else</p>
+    <p class="why">Stop hunting the grid. The rooms that still need a break sit in their own block. The rest of the tower is still there, quieter, underneath.</p>
+    <div class="phone"><div class="card">
+      <div class="head"><div><div class="tower">NT Tower</div><div class="sub">6 late · 3 dinner</div></div><div class="count">9<span>still need one</span></div></div>
+      <div class="split-label first">Still need one</div>
+      <div class="grid" id="b-due"></div>
+      <div class="split-label">Not this round</div>
+      <div class="grid" id="b-rest"></div>
+    </div></div>
+  </section>
+
+  <section class="ver">
+    <p class="tag">C · Say it on the room</p>
+    <p class="why">Color is easy to misread. The room says Late or Dinner if they still need it, and nothing if they do not. A check means they already got it.</p>
+    <div class="phone"><div class="card">
+      <div class="head"><div><div class="tower">NT Tower</div><div class="sub">North Tower ORs</div></div><div class="count">9<span>still need one</span></div></div>
+      <div class="grid" id="c"></div>
+    </div></div>
+  </section>
+</main>
+<script>
+var due = [
+  ["OR 9","Oaks","late"],["OR 10","Peura","late"],["OR 11","Mutz","late"],
+  ["OR 12","Bono","dinner"],["OR 16","Doss","dinner"],["OR 21","Wadehra","dinner"],
+  ["OR 23","Toksoy","late"],["OR 31","Disanto","late"],["OR 36","Sekerak","late"]
+];
+var rest = [
+  ["OR 1","Burke"],["OR 2","Savalle"],["OR 3","Kallabat"],["OR 4","Alion"],["OR 7","LaBombard"],
+  ["OR 8","Edwards"],["OR 14","Mattia"],["OR 15","Pelarski"],["OR 17","Licata"],["OR 20","Battista"],
+  ["OR 22","Crudo"],["OR 24","Holland"],["OR 25","Bacarella"],["OR 32","Garcia"],["OR 33","Pichette"]
+];
+function cell(room, name, kind, mode){
+  var cls = "r";
+  var extra = "";
+  if(mode==="a"){
+    if(kind==="late") cls += " due-late";
+    else if(kind==="dinner") cls += " due-dinner";
+    else cls += " quiet";
+  } else if(mode==="b"){
+    if(kind==="late") cls += " due-late";
+    else if(kind==="dinner") cls += " due-dinner";
+    else cls += " quiet";
+  } else {
+    if(kind==="late"){ cls += " due-late"; extra = "<span class='tagw'>LATE</span>"; }
+    else if(kind==="dinner"){ cls += " due-dinner"; extra = "<span class='tagw'>DINNER</span>"; }
+    else cls += " quiet";
+  }
+  return "<div class='"+cls+"'><div class='rm'>"+room+"</div><div class='nm'>"+name+"</div>"+extra+"</div>";
+}
+document.getElementById("a").innerHTML = [
+  ["OR 1","Burke"],["OR 2","Savalle"],["OR 3","Kallabat"],["OR 4","Alion"],["OR 7","LaBombard"],
+  ["OR 8","Edwards"],["OR 9","Oaks","late"],["OR 10","Peura","late"],["OR 11","Mutz","late"],["OR 12","Bono","dinner"],
+  ["OR 14","Mattia"],["OR 15","Pelarski"],["OR 16","Doss","dinner"],["OR 17","Licata"],["OR 20","Battista"],
+  ["OR 21","Wadehra","dinner"],["OR 22","Crudo"],["OR 23","Toksoy","late"],["OR 24","Holland"],["OR 25","Bacarella"]
+].map(function(x){return cell(x[0],x[1],x[2],"a");}).join("");
+document.getElementById("b-due").innerHTML = due.map(function(x){return cell(x[0],x[1],x[2],"b");}).join("");
+document.getElementById("b-rest").innerHTML = rest.map(function(x){return cell(x[0],x[1],null,"b");}).join("");
+document.getElementById("c").innerHTML = [
+  ["OR 9","Oaks","late"],["OR 10","Peura","late"],["OR 1","Burke"],["OR 12","Bono","dinner"],["OR 2","Savalle"],
+  ["OR 16","Doss","dinner"],["OR 11","Mutz","late"],["OR 3","Kallabat"],["OR 21","Wadehra","dinner"],["OR 4","Alion"],
+  ["OR 23","Toksoy","late"],["OR 8","Edwards"],["OR 31","Disanto","late"],["OR 14","Mattia"],["OR 36","Sekerak","late"]
+].map(function(x){return cell(x[0],x[1],x[2],"c");}).join("");
+</script>
+</body>
+</html>
