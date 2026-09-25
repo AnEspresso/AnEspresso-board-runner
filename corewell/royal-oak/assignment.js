@@ -3450,7 +3450,14 @@
     }
     var occ = occupantOf(cat, room);
     if (occ && coreShift(occ.shift) === "Dr") return "md";
-    if (occ) return shiftEndHour(occ.shift);
+    if (occ) {
+      var cover = activeCoverHere(occ.name, room);
+      if (cover) {
+        var end = callWindowEnd(cover.wave);
+        if (end) return end;
+      }
+      return shiftEndHour(occ.shift);
+    }
     return 15;
   }
 
@@ -3469,6 +3476,15 @@
     if (wave === 19) return "7-9 call";
     if (wave === 21) return "9-11 call";
     return "Call";
+  }
+
+  function callWindowEnd(wave) {
+    if (wave === 15) return 17;
+    if (wave === 17) return 19;
+    if (wave === 19) return 21;
+    if (wave === 21) return 23;
+    var n = Number(wave);
+    return n ? n + 2 : 0;
   }
 
   function callTeam(wave) {
@@ -3496,10 +3512,14 @@
   }
 
   function isCoveringHere(name, room) {
-    var hit = false;
+    return !!activeCoverHere(name, room);
+  }
+
+  function activeCoverHere(name, room) {
+    var hit = null;
     lateStayList().forEach(function (p) {
-      if (!p || !p.used || !name) return;
-      if (p.usedRoom === room && nameKey(p.name) === nameKey(name)) hit = true;
+      if (hit || !p || !p.used || p.relieved || !name) return;
+      if (p.usedRoom === room && nameKey(p.name) === nameKey(name)) hit = p;
     });
     return hit;
   }
@@ -3744,9 +3764,11 @@
         if (!roomIsActive(c.id, room)) return;
         var rec = staff[room];
         if (!rec || rec.closed || !rec.name) return;
-        if (shiftEndHour(rec.shift) !== wave) return;
+        var cover = activeCoverHere(rec.name, room);
+        if (cover) {
+          if (callWindowEnd(cover.wave) !== wave) return;
+        } else if (shiftEndHour(rec.shift) !== wave) return;
         if (coreShift(rec.shift) === "Dr") return;
-        if (rec.callCover || isCoveringHere(rec.name, room)) return;
         if (callPersonHolding(wave, rec.name)) return;
         var inn = plannedInn(c.id, room);
         var suggested = false;
@@ -3770,7 +3792,8 @@
         }
         rooms.push({
           cat: c.id, catName: c.name, room: room, out: rec, inn: inn,
-          suggested: suggested, intended: intended, wave: wave
+          suggested: suggested, intended: intended, wave: wave,
+          handoff: cover ? callWindowLabel(cover.wave) : ""
         });
       });
     });
@@ -3793,7 +3816,7 @@
         ? [r.room].concat(extras.map(function (x) { return x.room; })).join(" + ")
         : r.room;
       var ls = lsMap[k];
-      if (ls) {
+      if (ls && !r.handoff) {
         r.latestay = true;
         r.lsN = ls.n;
       }
@@ -3831,9 +3854,13 @@
   function collectAllLeavingWaves() {
     var hour = hospitalHour();
     var hours = occupantEndHours().filter(function (h) { return h >= hour - 1 && h < 30; });
-    (g.lateStays || (g.assignmentMeta && g.assignmentMeta.lateStays) || []).forEach(function (p) {
+    lateStayList().forEach(function (p) {
       var w = p && p.wave;
       if (w >= hour - 1 && w < 30 && hours.indexOf(w) < 0) hours.push(w);
+      if (p && p.used && !p.relieved) {
+        var end = callWindowEnd(w);
+        if (end && end >= hour - 1 && end < 30 && hours.indexOf(end) < 0) hours.push(end);
+      }
     });
     hours.sort(function (a, b) { return a - b; });
     if (!hours.length) {
@@ -3963,8 +3990,17 @@
     if (g.assignmentMeta) g.assignmentMeta.lateStays = g.lateStays;
   }
 
+  function usedCallRecord(name) {
+    var hit = null;
+    lateStayList().forEach(function (p) {
+      if (hit || !p || !p.used || p.relieved || !p.name) return;
+      if (nameKey(p.name) === nameKey(name)) hit = p;
+    });
+    return hit;
+  }
+
   function releaseCallPerson(name, byName) {
-    var hit = holdingCallRecord(name);
+    var hit = holdingCallRecord(name) || usedCallRecord(name);
     if (!hit) return false;
     var loc = locatePerson(name);
     if (loc && loc.where === "room") {
@@ -4546,7 +4582,7 @@
       '<span class="relief-room">' + (j.label || j.room) + "</span>" +
       shiftPillHtml(j.out && j.out.shift) +
       '<span class="staff-name">' + chipName(j.out && j.out.name) + "</span>" +
-      (j.latestay ? '<span class="staff-last">LS #' + j.lsN + "</span>" : "") +
+      (j.handoff ? '<span class="staff-last">' + j.handoff + "</span>" : (j.latestay ? '<span class="staff-last">LS #' + j.lsN + "</span>" : "")) +
       '<span class="relief-arrow">→</span>' +
       (inn ? shiftPillHtml(inn.shift) : "") +
       '<span class="staff-name' + (inn && !suggested ? "" : " missing") + '">' +
