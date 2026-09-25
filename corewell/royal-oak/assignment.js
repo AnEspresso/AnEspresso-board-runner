@@ -3459,15 +3459,174 @@
     return canPlaceRelief(wave);
   }
 
-  function suggestRelief(wave, used, side) {
+  function lateStayList() {
+    return g.lateStays || (g.assignmentMeta && g.assignmentMeta.lateStays) || [];
+  }
+
+  function callWindowLabel(wave) {
+    if (wave === 15) return "3-5 call";
+    if (wave === 17) return "5-7 call";
+    if (wave === 19) return "7-9 call";
+    if (wave === 21) return "9-11 call";
+    return "Call";
+  }
+
+  function callTeam(wave) {
+    return lateStayList().filter(function (p) {
+      return p && p.wave === wave && p.name && !p.used && !p.relieved;
+    }).sort(function (a, b) { return (a.n || 0) - (b.n || 0); });
+  }
+
+  function callPersonHolding(wave, name) {
+    if (!name) return false;
+    var hit = false;
+    callTeam(wave).forEach(function (p) {
+      if (nameKey(p.name) === nameKey(name)) hit = true;
+    });
+    return hit;
+  }
+
+  function holdingCallRecord(name) {
+    var hit = null;
+    lateStayList().forEach(function (p) {
+      if (hit || !p || p.used || p.relieved || !p.name) return;
+      if (nameKey(p.name) === nameKey(name)) hit = p;
+    });
+    return hit;
+  }
+
+  function isCoveringHere(name, room) {
+    var hit = false;
+    lateStayList().forEach(function (p) {
+      if (!p || !p.used || !name) return;
+      if (p.usedRoom === room && nameKey(p.name) === nameKey(name)) hit = true;
+    });
+    return hit;
+  }
+
+  function locatePerson(name) {
+    var k = nameKey(name);
+    if (!k) return null;
+    var found = null;
+    Object.keys(g.roomStaff || {}).forEach(function (cat) {
+      if (found) return;
+      Object.keys(g.roomStaff[cat] || {}).forEach(function (room) {
+        if (found) return;
+        var rec = g.roomStaff[cat][room];
+        if (!rec || rec.closed || !rec.name || nameKey(rec.name) !== k) return;
+        if (!roomIsActive(cat, room)) return;
+        found = { where: "room", cat: cat, room: room, rec: rec };
+      });
+    });
+    if (found) return found;
+    var deck = null;
+    (g.onDeck || []).forEach(function (p) {
+      if (deck || !p || nameKey(p.name) !== k) return;
+      deck = { where: "deck", rec: p };
+    });
+    return deck;
+  }
+
+  function callSideOf(p) {
+    var loc = locatePerson(p && p.name);
+    if (loc && loc.where === "room") return roomSide(loc.cat, loc.room);
+    if (loc && loc.rec) return personSide(loc.rec);
+    return "";
+  }
+
+  function packCallPerson(p, wave, destRoom) {
+    var loc = locatePerson(p.name);
+    var copy = {
+      name: p.name,
+      shift: (loc && loc.rec && loc.rec.shift) || p.shift || "",
+      from: "deck", fromCat: "", fromRoom: "",
+      callN: p.n, callLabel: callWindowLabel(wave)
+    };
+    if (loc && loc.where === "room") {
+      if (destRoom && loc.room === destRoom) return null;
+      copy.from = "room";
+      copy.fromCat = loc.cat;
+      copy.fromRoom = loc.room;
+    }
+    return copy;
+  }
+
+  function suggestCallPerson(wave, used, side, exceptName, destRoom) {
+    var team = callTeam(wave).filter(function (p) {
+      var k = nameKey(p.name);
+      if (used && used[k]) return false;
+      if (exceptName && k === nameKey(exceptName)) return false;
+      return true;
+    });
+    if (team.length < 2) return null;
+    var pool = team.slice(1);
+    pool.sort(function (a, b) { return (b.n || 0) - (a.n || 0); });
+    var order = pool;
+    if (side === "north" || side === "south") {
+      var same = pool.filter(function (p) { return callSideOf(p) === side; });
+      if (same.length) order = same;
+    }
+    var i;
+    for (i = 0; i < order.length; i++) {
+      var packed = packCallPerson(order[i], wave, destRoom);
+      if (packed) return packed;
+    }
+    return null;
+  }
+
+  function suggestLater(wave, used, side, exceptName) {
+    var pool = [];
+    (g.onDeck || []).forEach(function (p) {
+      if (!p || !p.name || isJunkStaff(p.name, p.shift)) return;
+      if (p.role === "call" || coreShift(p.shift) === "Dr") return;
+      var k = nameKey(p.name);
+      if (!k || (used && used[k])) return;
+      if (exceptName && k === nameKey(exceptName)) return;
+      if (callPersonHolding(wave, p.name)) return;
+      if (deckBucket(p) === "out") return;
+      var end = shiftEndHour(p.shift);
+      if (end != null && end !== 99 && end <= wave) return;
+      pool.push(p);
+    });
+    function idle(list) {
+      var now = list.filter(function (p) {
+        return deckBucket(p) === "now" && !isLeavingSoon(p.shift, p);
+      });
+      if (!now.length) now = list.slice();
+      if (!now.length) return null;
+      sortByIdle(now);
+      return now[0];
+    }
+    var hit = null;
+    if (side === "north" || side === "south") {
+      hit = idle(pool.filter(function (p) { return personSide(p) === side; }));
+    }
+    if (!hit) hit = idle(pool);
+    if (!hit) return null;
+    return {
+      name: hit.name, shift: hit.shift || "", from: "deck", fromCat: "", fromRoom: "",
+      side: personSide(hit)
+    };
+  }
+
+  function suggestRelief(wave, used, side, exceptName, destRoom, noCall) {
+    if (!noCall) {
+      var callHit = suggestCallPerson(wave, used, side, exceptName, destRoom);
+      if (callHit) return callHit;
+    } else {
+      var later = suggestLater(wave, used, side, exceptName);
+      if (later) return later;
+    }
     var pool = [];
     (g.onDeck || []).forEach(function (p) {
       if (!p || !p.name || isJunkStaff(p.name, p.shift)) return;
       if (p.role === "call") return;
       if (p.lsN) return;
+      if (callPersonHolding(wave, p.name)) return;
       if (coreShift(p.shift) === "Dr") return;
       var k = nameKey(p.name);
       if (!k || (used && used[k])) return;
+      if (exceptName && k === nameKey(exceptName)) return;
       if (deckBucket(p) === "out") return;
       var end = shiftEndHour(p.shift);
       var start = shiftStartHour(p.shift);
@@ -3587,6 +3746,8 @@
         if (!rec || rec.closed || !rec.name) return;
         if (shiftEndHour(rec.shift) !== wave) return;
         if (coreShift(rec.shift) === "Dr") return;
+        if (rec.callCover || isCoveringHere(rec.name, room)) return;
+        if (callPersonHolding(wave, rec.name)) return;
         var inn = plannedInn(c.id, room);
         var suggested = false;
         var intended = false;
@@ -3597,7 +3758,7 @@
             intended = true;
             used[nameKey(found.p.name)] = 1;
           } else {
-            var sug = suggestRelief(wave, used, roomSide(c.id, room));
+            var sug = suggestRelief(wave, used, roomSide(c.id, room), rec.name, room);
             if (sug) {
               inn = sug;
               suggested = true;
@@ -3682,18 +3843,8 @@
     var used = {};
     return hours.map(function (w) {
       var rooms = collectLeavingAt(w, used);
-      var seen = {};
-      rooms.forEach(function (r) {
-        if (r.out && r.out.name) seen[nameKey(r.out.name)] = 1;
-      });
-      lateStayRows(w, used).forEach(function (row) {
-        var k = nameKey(row.out && row.out.name);
-        if (!k || seen[k]) return;
-        seen[k] = 1;
-        rooms.push(row);
-      });
       return { wave: w, rooms: sortReliefRooms(rooms) };
-    }).filter(function (block) { return block.rooms.length; });
+    }).filter(function (block) { return block.rooms.length || callTeam(block.wave).length; });
   }
 
   function collectLeavingRooms() {
@@ -3802,6 +3953,100 @@
     return true;
   }
 
+  function noteCallPlaced(name, toCat, toRoom) {
+    var hit = holdingCallRecord(name);
+    if (!hit) return;
+    hit.used = true;
+    hit.usedCat = toCat;
+    hit.usedRoom = toRoom;
+    if (g.roomStaff[toCat] && g.roomStaff[toCat][toRoom]) g.roomStaff[toCat][toRoom].callCover = 1;
+    if (g.assignmentMeta) g.assignmentMeta.lateStays = g.lateStays;
+  }
+
+  function releaseCallPerson(name, byName) {
+    var hit = holdingCallRecord(name);
+    if (!hit) return false;
+    var loc = locatePerson(name);
+    if (loc && loc.where === "room") {
+      try { sendOccupantToDeck(loc.cat, loc.room); } catch (e) {}
+    }
+    var k = nameKey(name);
+    g.onDeck = (g.onDeck || []).filter(function (x) { return !x || nameKey(x.name) !== k; });
+    hit.relieved = true;
+    hit.relievedBy = byName || "";
+    if (g.assignmentMeta) g.assignmentMeta.lateStays = g.lateStays;
+    return true;
+  }
+
+  function afterCallChange(msg) {
+    try { if (typeof saveShared === "function") saveShared(); } catch (e) {}
+    try { if (typeof refreshBoard === "function") refreshBoard(); } catch (e) {}
+    try { renderOnDeck(); } catch (e) {}
+    try { renderShiftChange(); } catch (e) {}
+    try { if (msg && typeof showToast === "function") showToast(msg); } catch (e) {}
+  }
+
+  function relieveNextCall(wave) {
+    var team = callTeam(wave);
+    if (!team.length) return;
+    var p = team[0];
+    var loc = locatePerson(p.name);
+    if (loc && loc.where === "room") {
+      var sug = suggestLater(wave, {}, roomSide(loc.cat, loc.room), p.name);
+      if (sug) {
+        pickRelief(sug.from || "deck", sug.fromCat || "", sug.fromRoom || "", nameKey(sug.name), loc.cat, loc.room);
+        return;
+      }
+      openReliefRoster(loc.cat, loc.room);
+      return;
+    }
+    if (!releaseCallPerson(p.name, "")) return;
+    afterCallChange(chipName(p.name) + " can go");
+  }
+
+  function relieveAllCall(wave) {
+    var team = callTeam(wave).slice();
+    if (!team.length) return;
+    team.forEach(function (p) { releaseCallPerson(p.name, "none needed"); });
+    afterCallChange(callWindowLabel(wave) + " relieved");
+  }
+
+  function callSpot(p) {
+    var loc = locatePerson(p && p.name);
+    if (loc && loc.where === "room") return loc.room;
+    return "free";
+  }
+
+  function callReleaseHtml(wave) {
+    var team = callTeam(wave);
+    if (!team.length) return "";
+    var anyUsed = lateStayList().some(function (p) { return p && p.wave === wave && p.used; });
+    var lines = team.map(function (p, i) {
+      return "<span" + (i === 0 ? ' class="call-next"' : "") + ">#" + p.n + " " + chipName(p.name) + " · " + callSpot(p) + (i === 0 ? " · next home" : "") + "</span>";
+    }).join("");
+    var next = team[0];
+    var loc = locatePerson(next.name);
+    var action = "";
+    if (loc && loc.where === "room") {
+      var side = roomSide(loc.cat, loc.room);
+      var sug = suggestLater(wave, {}, side, next.name);
+      action = reliefChipHtml({
+        cat: loc.cat, room: loc.room, out: loc.rec, inn: sug, suggested: !!sug, wave: wave,
+        label: "Call #" + next.n
+      });
+    } else {
+      action = '<button type="button" class="call-relieve-btn" data-relievecall="' + wave + '" data-calln="' + next.n + '">Relieve #' + next.n + " " + chipName(next.name) + "</button>";
+    }
+    var allLabel = anyUsed ? "Relieve the rest" : "No call needed";
+    return '<div class="call-release">' +
+      '<div class="call-release-title">' + callWindowLabel(wave) + "</div>" +
+      '<div class="call-release-sub">Use them on ' + waveClock(wave) + " rooms that stay open. Then send them home in order.</div>" +
+      '<div class="call-release-list">' + lines + "</div>" +
+      action +
+      '<button type="button" class="call-all-btn" data-nocall="' + wave + '">' + allLabel + "</button>" +
+      "</div>";
+  }
+
   function pickRelief(from, fromCat, fromRoom, fromKey, toCat, toRoom) {
     var person = null;
     if (from === "deck") {
@@ -3813,6 +4058,9 @@
       if (rec && rec.name) person = rec;
     }
     if (!person || !person.name) return;
+    var destWave = reliefWaveFor(toCat, toRoom);
+    var outgoing = occupantOf(toCat, toRoom);
+    var outName = outgoing && outgoing.name;
     g.reliefPlan = g.reliefPlan || {};
     var k = planKey(toCat, toRoom);
     Object.keys(g.reliefPlan).forEach(function (pk) {
@@ -3823,7 +4071,7 @@
       student: !!person.student, from: from, fromCat: fromCat || "", fromRoom: fromRoom || "", fromKey: fromKey || nameKey(person.name)
     };
     var placed = false;
-    if (reliefReady(reliefWaveFor(toCat, toRoom))) {
+    if (reliefReady(destWave)) {
       if (toCat === "ls") {
         placed = assignLateStay(person, toRoom);
       } else {
@@ -3832,7 +4080,13 @@
           toCat, toRoom, true
         );
       }
-      if (placed) delete g.reliefPlan[k];
+      if (placed) {
+        delete g.reliefPlan[k];
+        if (toCat !== "ls") {
+          noteCallPlaced(person.name, toCat, toRoom);
+          if (outName && nameKey(outName) !== nameKey(person.name)) releaseCallPerson(outName, person.name);
+        }
+      }
     }
     closeReliefRoster();
     try { if (typeof saveShared === "function") saveShared(); } catch (e) {}
@@ -3890,7 +4144,12 @@
       if (isTimeLabel(lastName(p.name))) return;
       if (purpose === "relief") {
         var end = shiftEndHour(p.shift);
-        if (end <= wave && !isArrivingShift(p.shift) && p.role !== "midnight") return;
+        var onThisCall = callPersonHolding(wave, p.name);
+        var relievingCall = rec && callPersonHolding(wave, rec.name);
+        if (relievingCall) {
+          if (onThisCall) return;
+          if (end <= wave && !isArrivingShift(p.shift) && p.role !== "midnight") return;
+        } else if (!onThisCall && end <= wave && !isArrivingShift(p.shift) && p.role !== "midnight") return;
       }
       deck.push(p);
     });
@@ -3906,12 +4165,30 @@
         if (!s || s.closed || !s.name) return;
         if (exclude && nameKey(s.name) === exclude) return;
         if (coreShift(s.shift) === "Dr") return;
-        if (purpose === "relief" && shiftEndHour(s.shift) <= wave) return;
+        if (purpose === "relief") {
+          var onThisCall = callPersonHolding(wave, s.name);
+          var relievingCall = rec && callPersonHolding(wave, rec.name);
+          if (relievingCall) {
+            if (onThisCall) return;
+            if (shiftEndHour(s.shift) <= wave) return;
+          } else if (!onThisCall && shiftEndHour(s.shift) <= wave) return;
+        }
         pills.push({ p: s, room: r, cat: c.id });
       });
       if (pills.length) byCat.push({ name: c.name, pills: pills });
     });
     return { rec: rec, exclude: exclude, deck: deck, byCat: byCat, wave: wave };
+  }
+
+  function suggestBlurb(planned) {
+    if (!planned) return "";
+    if (planned.callN) {
+      var at = planned.from === "room" && planned.fromRoom ? planned.fromRoom + " · " : "";
+      return at + (planned.callLabel || "Call") + " #" + planned.callN;
+    }
+    if (planned.from === "room") return planned.fromRoom || "in a room";
+    var side = planned.side === "north" ? " on NT" : planned.side === "south" ? " on ST" : "";
+    return "On deck · longest idle" + side;
   }
 
   function openPersonRoster(opts) {
@@ -3924,9 +4201,14 @@
     var plannedKey = planned ? nameKey(planned.name) : "";
     if (purpose === "relief" && !planned) {
       var side = cat === "ls" ? roomSideOfName(rec && rec.name) : roomSide(cat, room);
-      var idle = longestIdleOnSide(list.deck, side);
+      var holdCall = !!(rec && callPersonHolding(list.wave, rec.name));
+      var sug = suggestRelief(list.wave, {}, side, rec && rec.name, room, holdCall);
+      var idle = sug || longestIdleOnSide(list.deck, side);
       if (idle) {
-        planned = { name: idle.name, from: "deck", fromCat: "", fromRoom: "", shift: idle.shift, side: side };
+        planned = {
+          name: idle.name, from: idle.from || "deck", fromCat: idle.fromCat || "", fromRoom: idle.fromRoom || "",
+          shift: idle.shift, side: idle.side || side, callN: idle.callN || 0, callLabel: idle.callLabel || ""
+        };
         plannedKey = nameKey(idle.name);
       }
     }
@@ -3959,8 +4241,7 @@
       suggestHtml =
         '<button type="button" class="sites-choice relief-suggest" id="relief-suggest-btn">' +
         "<strong>Send " + chipName(planned.name) + "</strong>" +
-        "<span>" + (planned.from === "room" ? (planned.fromRoom || "in a room") : ("On deck · longest idle" + (planned.side === "north" ? " on NT" : planned.side === "south" ? " on ST" : ""))) +
-        " · tap to place</span></button>";
+        "<span>" + suggestBlurb(planned) + " · tap to place</span></button>";
     }
 
     var ov = document.createElement("div");
@@ -4251,15 +4532,17 @@
     if (inn && (locked || suggested)) {
       action = '<span class="relief-need-place">' + (ready ? "Place" : "Plan") + "</span>";
     }
-    var from = (committed && committed.from) || "deck";
+    var from = (committed && committed.from) || (inn && inn.from) || "deck";
+    var fromCat = (committed && committed.fromCat) || (inn && inn.fromCat) || "";
+    var fromRoom = (committed && committed.fromRoom) || (inn && inn.fromRoom) || "";
     var who = inn ? nameKey(inn.name) : "";
     return '<button type="button" class="relief-need' + (locked ? " planned" : "") + '"' +
       ' data-relcat="' + j.cat + '" data-relroom="' + String(j.room).replace(/"/g, "") + '"' +
       ' data-relwave="' + (j.wave == null ? "" : j.wave) + '"' +
       (who ? ' data-relwho="' + who + '"' : "") +
       ' data-relfrom="' + from + '"' +
-      ' data-relfromcat="' + ((committed && committed.fromCat) || "") + '"' +
-      ' data-relfromroom="' + ((committed && committed.fromRoom) || "") + '">' +
+      ' data-relfromcat="' + fromCat + '"' +
+      ' data-relfromroom="' + fromRoom + '">' +
       '<span class="relief-room">' + (j.label || j.room) + "</span>" +
       shiftPillHtml(j.out && j.out.shift) +
       '<span class="staff-name">' + chipName(j.out && j.out.name) + "</span>" +
@@ -4403,7 +4686,7 @@
     }
     var hint =
       fn === "people" ? "Search a name, then send them to deck, move, or swap. Free now is longest-idle first."
-      : fn === "relief" ? "Each row suggests who can cover. Plan holds them. Place moves them when that hour is close."
+      : fn === "relief" ? "Call covers the rooms that stay open. Then send that call home in order, or tap No call needed."
       : "Tap a staffed room to move that person. Tap an empty room to open or close it.";
     var viewBtn = (g.lastSheet && g.lastSheet.cells) || (g.assignmentMeta && g.assignmentMeta.cells)
       ? '<button type="button" class="desk-upload-btn" id="desk-view-sheet">View uploaded sheet</button>'
@@ -4450,10 +4733,12 @@
       var explicit = g.reliefOpen[block.wave];
       var open = explicit === undefined ? (i === 0) : !!explicit;
       var chips = open ? block.rooms.map(reliefChipHtml).join("") : "";
-      var title = "Out at " + waveClock(block.wave) + " · " + block.rooms.length;
+      var callBox = open ? callReleaseHtml(block.wave) : "";
+      var teamN = callTeam(block.wave).length;
+      var title = "Out at " + waveClock(block.wave) + " · " + block.rooms.length + (teamN ? " · " + callWindowLabel(block.wave) : "");
       return '<button type="button" class="relief-wave-toggle" data-fold="wave" data-wave="' + block.wave + '" aria-expanded="' + (open ? "true" : "false") + '">' +
         (open ? "Hide · " : "") + title + (open ? " ▴" : " ▾") + "</button>" +
-        (open ? '<div class="relief-need-grid">' + chips + "</div>" : "");
+        (open ? callBox + '<div class="relief-need-grid">' + chips + "</div>" : "");
     }).join("");
     if (docs.length) {
       var docsOpen = g.docsOpen === undefined ? (hour >= 16) : !!g.docsOpen;
@@ -4481,6 +4766,20 @@
       };
     });
     bindReliefNeeds(pane);
+    pane.querySelectorAll("[data-relievecall]").forEach(function (el) {
+      el.onclick = function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        relieveNextCall(parseInt(el.getAttribute("data-relievecall"), 10));
+      };
+    });
+    pane.querySelectorAll("[data-nocall]").forEach(function (el) {
+      el.onclick = function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        relieveAllCall(parseInt(el.getAttribute("data-nocall"), 10));
+      };
+    });
     pane.querySelectorAll(".breakq-item[data-qcat]").forEach(function (el) {
       el.onclick = function (ev) {
         ev.stopPropagation();
@@ -6702,6 +7001,15 @@
         ".relief-need .staff-name.missing{color:#9A6A38;font-weight:500;}" +
         ".relief-need-place{flex-shrink:0;font-size:9px;font-weight:800;padding:2px 5px;border-radius:5px;background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;margin-left:1px;}" +
         ".relief-wave-toggle{width:100%;margin:8px 0 0;padding:10px 12px;min-height:44px;border-radius:10px;border:1px solid rgba(160,98,42,.22);background:#FDF6EC;color:#7A4E2D;font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;text-align:left;cursor:pointer;}" +
+        ".call-release{margin:8px 0 4px;padding:10px 10px 8px;border-radius:12px;background:#E7F1FA;border:1px solid rgba(26,106,154,.28);}" +
+        ".call-release-title{font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#1A6A9A;}" +
+        ".call-release-sub{font-size:12px;color:#1A5270;line-height:1.35;margin:3px 0 6px;}" +
+        ".call-release-list{display:flex;flex-direction:column;gap:2px;font-size:13px;font-weight:700;color:#1E0E04;line-height:1.35;margin:0 0 8px;}" +
+        ".call-release-list .call-next{color:#1A6A9A;}" +
+        ".call-relieve-btn,.call-all-btn{width:100%;margin:0 0 6px;padding:11px 12px;min-height:44px;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;}" +
+        ".call-relieve-btn{border:none;background:#1A6A9A;color:#fff;}" +
+        ".call-all-btn{border:1.5px solid #1A6A9A;background:#fff;color:#1A6A9A;}" +
+        ".call-release .relief-need{background:#fff;}" +
         ".ondeck-out-toggle{min-height:44px;width:100%;margin:8px 0 4px;padding:10px 12px;border-radius:10px;border:1px solid rgba(160,98,42,.22);background:#FDF6EC;color:#7A4E2D;font-size:12px;font-weight:800;text-align:left;cursor:pointer;}" +
         ".ondeck-chip.later,.roster-pill.later{opacity:.82;}" +
         ".desk-undo-btn{width:100%;margin:0 0 8px;padding:10px 12px;border-radius:12px;border:1.5px solid #7A4E2D;background:#F5E6D0;color:#5A2E0A;font-size:13px;font-weight:800;cursor:pointer;}" +
