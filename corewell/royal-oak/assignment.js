@@ -161,6 +161,7 @@
   function cleanName(s) {
     s = String(s || "").replace(/\*/g, " ");
     s = s.replace(/\s*\+.*$/, "");
+    s = s.replace(/\s*\/\s*(?:endo(?:\s*br(?:eaker)?)?|br(?:eaker)?)\b.*$/i, "");
     s = s.replace(/\s*\(.*\)$/, "");
     s = s.replace(/\s*REQ\s*$/i, "");
     s = s.replace(/[@＠]\s*(?:0?\d{1,2}[:.]\d{2}|\d{3,4})/g, " ");
@@ -244,7 +245,7 @@
     if (isTimeLabel(n)) return true;
     if (!/[A-Za-z]{3,}/.test(n)) return true;
     if (/^\d{1,2}-\d{1,2}/.test(n)) return true;
-    if (/^(rotate|available|closed)$/i.test(n)) return true;
+    if (/^(rotate|available|closed|resident|residents)$/i.test(n)) return true;
     if (/^(11-7a|3-11p)$/i.test(n.replace(/\s/g, ""))) return true;
     return false;
   }
@@ -572,7 +573,7 @@
     return ({
       breaker: 50, wbf: 40, call: 30, midnight: 25,
       evening: 22, resident: 22, night: 20, latestay: 15,
-      extra: 10, offsite: 10, unplaced: 1, shift: 1
+      needsroom: 8, extra: 10, offsite: 10, unplaced: 1, shift: 1
     }[role] || 0);
   }
 
@@ -1004,6 +1005,10 @@
               if (x.name && nameKey(x.name) === nameKey(st.name) && x.shift) callShift = x.shift;
             });
           }
+          if (callShift && !st.shift) {
+            st.shift = callShift;
+            st.kind = breakKind(callShift) || st.kind;
+          }
           calls.push({ name: st.name, shift: callShift, lastRoom: lastRoom || "", role: "call" });
         }
         addDeck(st, lastRoom, role);
@@ -1071,7 +1076,8 @@
       if (!p.name) return false;
       var k = nameKey(p.name);
       if (!placed[k]) return true;
-      if ((p.role === "midnight" || p.role === "call") && placedDr[k] && coreShift(p.shift) !== "Dr") return true;
+      if (p.role === "call") return true;
+      if (p.role === "midnight" && placedDr[k] && coreShift(p.shift) !== "Dr") return true;
       return false;
     });
     onDeck = mergeDeckPeople(onDeck);
@@ -1246,6 +1252,13 @@
         var incomingRoom = !!(loc && loc.room) || parsed.bareOb || parsed.br;
         var prevRoom = !!(prev.room || prev.ob || prev.role === "breaker");
         if (incomingRoom && !prevRoom && role !== "call" && role !== "midnight" && role !== "srna") {
+          if (prev.role === "call") {
+            prev.calls = prev.calls || [];
+            var priorLabel = prev.assign || "call";
+            if (!prev.calls.some(function (c) { return c && c.assign === priorLabel; })) {
+              prev.calls.push({ shift: prev.shift || "", assign: priorLabel });
+            }
+          }
           if (nameKey(prev.name) === nameKey(opts.name)) prev.name = cleanName(opts.name);
           prev.shift = opts.shift || prev.shift;
           prev.assign = parsed.raw || prev.assign;
@@ -1258,10 +1271,18 @@
           prev.arrival = parsed.obTime || "";
           prev.noted = noted;
           prev.intended = parsed.obTime ? "OB" : (prev.intended || "");
-        } else if (role === "call" && !prev.room && !prev.ob && prev.role !== "breaker" && prev.role !== "srna") {
-          prev.role = "call";
-          prev.shift = opts.shift || prev.shift;
-          prev.assign = parsed.raw || prev.assign;
+        } else if (role === "call") {
+          prev.calls = prev.calls || [];
+          var callLabel = parsed.raw || opts.assign || "call";
+          if (!prev.calls.some(function (c) { return c && c.assign === callLabel; })) {
+            prev.calls.push({ shift: opts.shift || "", assign: callLabel });
+          }
+          if (!prev.room && !prev.ob && prev.role !== "breaker" && prev.role !== "srna" && prev.role !== "midnight") {
+            prev.role = "call";
+            prev.shift = opts.shift || prev.shift;
+            prev.assign = callLabel;
+          }
+          return;
         }
         return;
       }
@@ -1290,6 +1311,9 @@
         lastShift = "";
         pendingCall = false;
         inSrna = false;
+        if (e) callBits(e).forEach(function (bit) {
+          addPerson({ date: currentDate, name: bit.name, shift: bit.shift, assign: bit.label, role: "call" });
+        });
         continue;
       }
       if (/South Tower/i.test(b) || /South Tower/i.test(a)) {
@@ -1297,6 +1321,9 @@
         lastShift = "";
         pendingCall = false;
         inSrna = false;
+        if (e) callBits(e).forEach(function (bit) {
+          addPerson({ date: currentDate, name: bit.name, shift: bit.shift, assign: bit.label, role: "call" });
+        });
         continue;
       }
       if (/^Days$/i.test(e)) posSection = "day";
@@ -1411,10 +1438,23 @@
       onDeck.push(rec);
     }
 
+    function pushCalls(p) {
+      var primary = p.role === "call" ? (p.assign || "call") : "";
+      (p.calls || []).forEach(function (c) {
+        if (!c) return;
+        var label = c.assign || "call";
+        if (primary && label === primary) return;
+        onDeck.push({
+          name: p.name, shift: c.shift || "", kind: breakKind(c.shift || p.shift),
+          lastRoom: label, role: "call", intended: "", student: !!p.student
+        });
+      });
+    }
+
     dayPeople.forEach(function (p) {
       if (!p.name || used[nameKey(p.name)]) return;
       if (p.role === "breaker") { take(p, { role: "breaker", lastRoom: "BR" }); return; }
-      if (p.role === "call") { take(p, { role: "call", lastRoom: p.assign || "call" }); return; }
+      if (p.role === "call") { take(p, { role: "call", lastRoom: p.assign || "call" }); pushCalls(p); return; }
       if (p.role === "midnight") { take(p, { role: "midnight", lastRoom: "night" }); return; }
       if (p.role === "srna") { take(p, { role: "srna", lastRoom: "SRNA" }); return; }
       if ((p.at3p || p.arrival) && !(p.cat && p.room)) { take(p, { role: p.role === "breaker" ? "breaker" : "float", lastRoom: "OB @" + (p.arrival || "3p"), intended: "OB" }); return; }
@@ -1423,10 +1463,14 @@
       if (p.cat && p.room) {
         rooms.push({ cat: p.cat, room: p.room, shift: p.shift, name: p.name, closed: false, kind: p.kind, student: !!p.student });
         used[nameKey(p.name)] = 1;
+        pushCalls(p);
         return;
       }
-      if (p.assign && !/^BR$/i.test(p.assign) && !/^call$/i.test(p.assign) && p.role !== "call" && p.role !== "srna" && !p.arrival && !p.noted) unmatched.push({ room: p.assign, staff: p.name });
-      take(p, { role: p.role || "float" });
+      var blankAssign = !String(p.assign || "").trim();
+      if (!blankAssign && !/^BR$/i.test(p.assign) && !/^call$/i.test(p.assign) && p.role !== "call" && p.role !== "srna" && !p.arrival && !p.noted) unmatched.push({ room: p.assign, staff: p.name });
+      var tailRole = p.role || "float";
+      if ((!p.role || p.role === "float") && blankAssign && !p.room && !p.cat && !p.noted && !p.ob && !p.arrival) tailRole = "needsroom";
+      take(p, { role: tailRole, lastRoom: tailRole === "needsroom" ? "needs a room" : (p.assign || "") });
     });
     var obSlots = ["OB 1", "OB 2"];
     obQueue.forEach(function (p, i) {
@@ -1455,6 +1499,9 @@
       rooms: rooms, closed: [], unmatched: unmatched, people: dayPeople,
       pos: { day: todayPos ? todayPos.n : null, evening: todayEve ? todayEve.n : 4, "2300-0700": 4 },
       onDeck: onDeck,
+      calls: onDeck.filter(function (p) { return p && p.role === "call"; }).map(function (p) {
+        return { name: p.name, shift: p.shift || "", lastRoom: p.lastRoom || "call", role: "call" };
+      }),
       sheetPeople: dayPeople.filter(function (p) { return p && p.name; }).map(function (p) {
         var locs = (p.cat && p.room) ? [{ cat: p.cat, room: p.room }] : [];
         return {
@@ -1574,7 +1621,12 @@
     if (p.role === "unplaced" && p.lastRoom) return String(p.lastRoom).replace(/([A-Za-z])(\d)/g, "$1 $2");
     if (p.role === "freed" && p.lastRoom) return "last " + p.lastRoom;
     if (p.role === "breaker") return p.lastRoom ? "BR " + p.lastRoom : "breaker";
-    if (p.role === "call") return "call";
+    if (p.role === "needsroom") return "";
+    if (p.role === "call") {
+      var lab = String(p.lastRoom || "").trim();
+      if (lab && !/^call$/i.test(lab)) return lab;
+      return "call";
+    }
     if (p.role === "midnight") return "night";
     return "";
   }
@@ -2037,12 +2089,41 @@
     return true;
   }
 
+  function reconcileSeatMarks(prevWho) {
+    if (!prevWho || typeof state === "undefined" || !state) return;
+    Object.keys(prevWho).forEach(function (key) {
+      var cut = key.indexOf("|");
+      if (cut < 0) return;
+      var cat = key.slice(0, cut);
+      var room = key.slice(cut + 1);
+      var prev = prevWho[key];
+      if (!prev) return;
+      var occ = occupantOf(cat, room);
+      if (occ && occ.name && namesMatch(prev, occ.name)) return;
+      var w;
+      for (w = 0; w < state.length; w++) {
+        if (!state[w] || !state[w][cat] || !state[w][cat][room]) continue;
+        if (typeof setBreakState === "function") setBreakState(w, cat, room, false);
+        else {
+          state[w][cat][room] = false;
+          if (typeof stateEvents !== "undefined" && stateEvents[w] && stateEvents[w][cat]) {
+            stateEvents[w][cat][room] = { done: false, ts: Date.now() };
+          }
+        }
+      }
+      try {
+        if (typeof sitePrefs !== "undefined" && sitePrefs && sitePrefs[room]) delete sitePrefs[room];
+      } catch (e) {}
+    });
+  }
+
   function applyAssignmentResult(res) {
     if (!res) return;
     if (res.kind === "split") {
       applySplitRoster(res);
       return;
     }
+    var prevWho = (g.assignmentMeta && g.assignmentMeta.seatWho) || null;
     try {
       if (!g.roomStaff) g.roomStaff = {};
       var listed = {};
@@ -2124,6 +2205,11 @@
       try { localStorage.setItem("anespresso_runner_sheet_v1", JSON.stringify(g.lastSheet)); } catch (e) {}
       g.keptOpen = {};
       var seats = collectSeats();
+      reconcileSeatMarks(prevWho);
+      var seatWho = {};
+      seats.forEach(function (s) {
+        if (s && s.cat && s.room && s.name) seatWho[s.cat + "|" + s.room] = s.name;
+      });
       g.assignmentMeta = {
         date: res.date, kind: res.kind, file: res.fileName || "", pos: res.pos,
         lateN: (res.late || []).length, dinnerN: (res.dinner || []).length,
@@ -2133,6 +2219,7 @@
         calls: g.calls,
         runners: res.runners || null,
         seats: seats,
+        seatWho: seatWho,
         cleared: false
       };
       closeUnstaffedRooms();
@@ -2529,7 +2616,21 @@
       card.id = "card-ondeck";
       board.insertBefore(card, board.firstChild);
     }
-    var parts = splitDeck(list);
+    var needs = [];
+    var calls = [];
+    var rest = [];
+    list.forEach(function (p) {
+      if (p.role === "needsroom") needs.push(p);
+      else if (p.role === "call") calls.push(p);
+      else rest.push(p);
+    });
+    needs.sort(function (a, b) { return String(chipName(a.name)).localeCompare(String(chipName(b.name))); });
+    calls.sort(function (a, b) {
+      var d = String(a.lastRoom || "").localeCompare(String(b.lastRoom || ""));
+      if (d) return d;
+      return String(chipName(a.name)).localeCompare(String(chipName(b.name)));
+    });
+    var parts = splitDeck(rest);
     var here = parts.now;
     var later = parts.later;
     var gone = parts.gone;
@@ -2544,6 +2645,8 @@
         (mark === "out" ? '<span class="staff-last">out</span>' : (mark === "later" ? '<span class="staff-last">later</span>' : "")) +
         "</button>";
     }
+    var needChips = needs.map(function (p) { return chipHtml(p, "need"); }).join("");
+    var callChips = calls.map(function (p) { return chipHtml(p, "call"); }).join("");
     var hereChips = here.map(function (p) { return chipHtml(p, ""); }).join("");
     var laterChips = later.map(function (p) { return chipHtml(p, "later"); }).join("");
     var goneChips = gone.map(function (p) { return chipHtml(p, "out"); }).join("");
@@ -2572,15 +2675,30 @@
             : '<div class="ondeck-hint">Longest idle first · tap someone, then tap a room</div>')));
     var run = runnerLineText();
     var runHtml = run ? '<div class="ondeck-runners">' + escHtml(run) + "</div>" : "";
+    var needBlock = needs.length
+      ? '<div class="ondeck-need-title">Needs a room · ' + needs.length + "</div>" +
+        '<div class="ondeck-grid ondeck-need-grid">' + needChips + "</div>"
+      : "";
+    var callBlock = calls.length
+      ? '<div class="ondeck-call-title">Call · ' + calls.length + "</div>" +
+        '<div class="ondeck-grid ondeck-call-grid">' + callChips + "</div>"
+      : "";
+    var sub = needs.length
+      ? (needs.length + " need a room · " + here.length + " free")
+      : "Free now · longest idle first";
+    var headN = needs.length || here.length;
+    var headLbl = needs.length ? "need" : "now";
     card.innerHTML =
       '<div class="cat-header-row"><div class="cup-indicator">☕</div><div class="cat-info">' +
       '<div class="cat-name">On deck</div>' +
-      '<div class="cat-full-name">Free now · longest idle first</div></div>' +
-      '<div class="cat-progress-label"><div class="cat-pct">' + here.length + '</div>' +
-      '<div class="cat-count">now</div></div></div>' +
+      '<div class="cat-full-name">' + sub + "</div></div>" +
+      '<div class="cat-progress-label"><div class="cat-pct">' + headN + '</div>' +
+      '<div class="cat-count">' + headLbl + "</div></div></div>" +
       runHtml +
       hint +
+      needBlock +
       '<div class="ondeck-grid">' + (hereChips || '<span class="roster-empty">Nobody free right now</span>') + "</div>" +
+      callBlock +
       laterBtn +
       outBtn;
     function inBucket(arr, key) {
@@ -3994,7 +4112,10 @@
     var pane = document.getElementById("desk-people-pane");
     if (!pane) return;
     var list = (window.onDeck || g.onDeck || []).filter(function (p) {
-      return p && p.name && !isJunkStaff(p.name, p.shift);
+      return p && p.name && !isJunkStaff(p.name, p.shift) && p.role !== "call" && p.role !== "needsroom";
+    });
+    var needs = (window.onDeck || g.onDeck || []).filter(function (p) {
+      return p && p.name && p.role === "needsroom" && !isJunkStaff(p.name, p.shift);
     });
     var parts = splitDeck(list);
     var here = parts.now, later = parts.later, gone = parts.gone;
@@ -4056,10 +4177,15 @@
       ? '<div class="assign-cat-label">Call</div><div class="roster-grid">' + callChips + "</div>"
       : "";
     var run = runnerLineText();
+    var needBlock = needs.length
+      ? '<div class="assign-cat-label">Needs a room</div><div class="roster-grid">' +
+        needs.map(function (p) { return pill(p, "need"); }).join("") + "</div>"
+      : "";
     pane.innerHTML =
       (run ? '<div class="ondeck-runners">' + escHtml(run) + "</div>" : "") +
       '<input id="desk-people-q" class="desk-people-search" type="search" placeholder="Search a name" autocomplete="off" autocorrect="off" spellcheck="false">' +
       '<button type="button" class="desk-add-btn" id="desk-add-staff">Add someone who came in</button>' +
+      needBlock +
       '<div class="assign-cat-label">Free now · longest idle first</div>' +
       '<div class="roster-grid">' + (hereChips || '<span class="roster-empty">Nobody free right now</span>') + "</div>" +
       laterBlock +
@@ -4261,27 +4387,25 @@
 
   function resetRoomsAfterClear() {
     var now = Date.now();
-    var weekend = false;
-    try { weekend = typeof isWeekend === "function" && isWeekend(); } catch (e) {}
     if (typeof CATEGORIES === "undefined") return;
     CATEGORIES.forEach(function (c) {
       var rooms = c.rooms || [];
       if (typeof catEditState !== "undefined" && catEditState[c.id]) {
         var es = catEditState[c.id];
-        es.deletedRooms = new Set(weekend ? rooms.slice() : []);
+        es.deletedRooms = new Set(rooms.slice());
         es.deletedEvents = {};
         rooms.forEach(function (r) {
-          es.deletedEvents[r] = { deleted: !!weekend, ts: now };
+          es.deletedEvents[r] = { deleted: true, ts: now };
         });
       }
       if (typeof weekendActive !== "undefined") {
         weekendActive[c.id] = weekendActive[c.id] || {};
         rooms.forEach(function (r) {
-          weekendActive[c.id][r] = !weekend;
+          weekendActive[c.id][r] = false;
           var btn = document.getElementById("wknd-" + c.id + "-" + r.replace(/\s/g, "_"));
           if (btn) {
-            btn.classList.toggle("active", !weekend);
-            btn.classList.toggle("room-inactive-marker", !!weekend);
+            btn.classList.toggle("active", false);
+            btn.classList.toggle("room-inactive-marker", true);
             var line = btn.querySelector(".staff-line");
             if (line) line.remove();
           }
@@ -6085,8 +6209,8 @@
         ".ondeck-chip .shift-pill{position:static;}" +
         ".staff-id{display:inline-flex;align-items:center;justify-content:center;gap:1px;min-width:0;max-width:100%;flex:0 1 auto;white-space:nowrap;}" +
         ".staff-name{font-size:10px;font-weight:700;color:#1E0E04;letter-spacing:-0.03em;min-width:0;overflow:hidden;text-overflow:clip;white-space:nowrap;flex:0 1 auto;}" +
-        ".staff-name.long{font-size:8.5px;letter-spacing:-0.04em;}" +
-        ".staff-name.tiny{font-size:7.5px;letter-spacing:-0.05em;}" +
+        ".staff-name.long{font-size:9px;letter-spacing:-0.03em;}" +
+        ".staff-name.tiny{font-size:8px;letter-spacing:-0.035em;}" + +
         ".staff-stu{font-size:9px;font-weight:800;color:#C8781A;margin-left:1px;line-height:1;flex-shrink:0;}" +
         ".staff-last{font-size:10px;font-weight:500;color:#9A6A38;}" +
         ".staff-last::before{content:'·';margin:0 3px;color:rgba(122,78,45,.45);}" +
@@ -6130,6 +6254,11 @@
         ".ondeck-card{border:1px dashed rgba(122,78,45,.28);}" +
         ".ondeck-grid{display:flex;flex-wrap:wrap;gap:6px;padding:4px 12px 12px;}" +
         ".ondeck-chip{display:inline-flex;align-items:center;gap:3px;white-space:nowrap;max-width:100%;background:#FDF6EC;border:1px solid rgba(160,98,42,.22);border-radius:8px;padding:5px 8px;cursor:pointer;-webkit-appearance:none;appearance:none;font:inherit;color:inherit;}" +
+        ".ondeck-chip.need{border-color:#C8781A;background:#FFF0D8;}" +
+        ".ondeck-chip.call{border-color:#1A6A9A;background:#E7F1FA;}" +
+        ".ondeck-need-title,.ondeck-call-title{padding:2px 12px 0;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#A05A10;}" +
+        ".ondeck-call-title{color:#1A6A9A;margin-top:2px;}" +
+        ".roster-pill.need{border-color:#C8781A;background:#FFF0D8;}" + +
         ".ondeck-chip.selected{border-color:#7A4E2D;background:#F5E6D0;box-shadow:inset 0 0 0 1px #7A4E2D;}" +
         ".ondeck-out-toggle{display:flex;align-items:center;justify-content:center;gap:6px;margin:2px 12px 10px;padding:8px 10px;width:calc(100% - 24px);box-sizing:border-box;border-radius:8px;border:1px dashed rgba(122,78,45,.35);background:#FBF6F0;color:#7A4E2D;font:inherit;font-size:12px;font-weight:700;cursor:pointer;-webkit-appearance:none;appearance:none;}" +
         ".ondeck-out-grid{opacity:.95;padding-top:0;}" +
