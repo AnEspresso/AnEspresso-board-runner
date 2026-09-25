@@ -1615,6 +1615,7 @@
   }
 
   function deckTag(p) {
+    if (p.lsN) return "LS #" + p.lsN;
     if (p.role === "wbf") {
       var where = p.intended || p.lastRoom || "";
       if (!where || /^WBF$/i.test(where)) return "WBF";
@@ -2529,6 +2530,15 @@
     return now[0] || null;
   }
 
+  function longestIdleOnSide(deck, side) {
+    if (side === "north" || side === "south") {
+      var same = (deck || []).filter(function (p) { return personSide(p) === side; });
+      var hit = longestIdleDeck(same);
+      if (hit) return hit;
+    }
+    return longestIdleDeck(deck);
+  }
+
   function todayRoster() {
     var out = [];
     var seen = {};
@@ -3066,7 +3076,7 @@
   function refreshMoveHints() {
     var desk = document.querySelector("#weekend-overlay.show .sites-fn-hint");
     if (desk && g.sitesFn === "rooms") {
-      desk.textContent = g.moveHint || "Tap a room to open or close it. Closing a staffed room asks where they go. Tap a name to move them.";
+      desk.textContent = g.moveHint || "Tap a staffed room to move that person. Tap an empty room to open or close it.";
     }
   }
 
@@ -3449,11 +3459,12 @@
     return canPlaceRelief(wave);
   }
 
-  function suggestRelief(wave, used) {
+  function suggestRelief(wave, used, side) {
     var pool = [];
     (g.onDeck || []).forEach(function (p) {
       if (!p || !p.name || isJunkStaff(p.name, p.shift)) return;
       if (p.role === "call") return;
+      if (p.lsN) return;
       if (coreShift(p.shift) === "Dr") return;
       var k = nameKey(p.name);
       if (!k || (used && used[k])) return;
@@ -3464,15 +3475,28 @@
       if (deckBucket(p) === "later" && start > wave) return;
       pool.push(p);
     });
-    var now = pool.filter(function (p) {
-      return deckBucket(p) === "now" && !isLeavingSoon(p.shift, p);
-    });
-    if (now.length) {
+    function idleNow(list) {
+      var now = list.filter(function (p) {
+        return deckBucket(p) === "now" && !isLeavingSoon(p.shift, p);
+      });
+      if (!now.length) return null;
       sortByIdle(now);
       return now[0];
     }
-    pool.sort(function (a, b) { return shiftStartHour(a.shift) - shiftStartHour(b.shift); });
-    return pool[0] || null;
+    if (side === "north" || side === "south") {
+      var onTower = idleNow(pool.filter(function (p) { return personSide(p) === side; }));
+      if (onTower) return onTower;
+    }
+    var any = idleNow(pool);
+    if (any) return any;
+    var rest = pool;
+    if (side === "north" || side === "south") {
+      var laterSame = pool.filter(function (p) { return personSide(p) === side; });
+      if (laterSame.length) rest = laterSame;
+    }
+    if (!rest.length) return null;
+    rest.sort(function (a, b) { return shiftStartHour(a.shift) - shiftStartHour(b.shift); });
+    return rest[0];
   }
 
   function planKey(cat, room) { return cat + "|" + room; }
@@ -3509,15 +3533,32 @@
     return rooms;
   }
 
+  function roomSideOfName(name) {
+    var found = "";
+    if (!name) return "";
+    Object.keys(g.roomStaff || {}).forEach(function (cat) {
+      if (found) return;
+      Object.keys(g.roomStaff[cat] || {}).forEach(function (room) {
+        if (found) return;
+        var rec = g.roomStaff[cat][room];
+        if (!rec || rec.closed || !rec.name || !roomIsActive(cat, room)) return;
+        if (!namesMatch(rec.name, name)) return;
+        var s = roomSide(cat, room);
+        if (s === "north" || s === "south") found = s;
+      });
+    });
+    return found;
+  }
+
   function lateStayRows(wave, used) {
     return (g.lateStays || (g.assignmentMeta && g.assignmentMeta.lateStays) || []).filter(function (p) {
-      return p && p.wave === wave && p.name;
+      return p && p.wave === wave && p.name && !p.covered;
     }).sort(function (a, b) { return (a.n || 0) - (b.n || 0); }).map(function (p) {
       var room = "LS #" + p.n;
       var inn = plannedInn("ls", room);
       var suggested = false;
       if (!inn) {
-        var sug = suggestRelief(wave, used);
+        var sug = suggestRelief(wave, used, roomSideOfName(p.name));
         if (sug) {
           inn = sug;
           suggested = true;
@@ -3556,7 +3597,7 @@
             intended = true;
             used[nameKey(found.p.name)] = 1;
           } else {
-            var sug = suggestRelief(wave, used);
+            var sug = suggestRelief(wave, used, roomSide(c.id, room));
             if (sug) {
               inn = sug;
               suggested = true;
@@ -3733,6 +3774,34 @@
     return true;
   }
 
+  function assignLateStay(person, room) {
+    if (!person || !person.name) return false;
+    var n = parseInt(String(room || "").replace(/\D/g, ""), 10);
+    if (!n) return false;
+    if (!g.lateStays) g.lateStays = (g.assignmentMeta && g.assignmentMeta.lateStays) || [];
+    if (g.assignmentMeta) g.assignmentMeta.lateStays = g.lateStays;
+    g.lateStays.forEach(function (p) {
+      if (!p || p.n === n) return;
+      if (p.coveredBy && nameKey(p.coveredBy) === nameKey(person.name)) {
+        p.covered = false;
+        p.coveredBy = "";
+        p.coveredShift = "";
+      }
+    });
+    var hit = null;
+    g.lateStays.forEach(function (p) { if (p && p.n === n) hit = p; });
+    if (!hit) return false;
+    (g.onDeck || []).forEach(function (p) {
+      if (p && p.lsN === n && nameKey(p.name) !== nameKey(person.name)) p.lsN = 0;
+    });
+    hit.covered = true;
+    hit.coveredBy = person.name;
+    hit.coveredShift = person.shift || "";
+    var onDeck = (g.onDeck || []).filter(function (p) { return p && nameKey(p.name) === nameKey(person.name); })[0];
+    if (onDeck) onDeck.lsN = n;
+    return true;
+  }
+
   function pickRelief(from, fromCat, fromRoom, fromKey, toCat, toRoom) {
     var person = null;
     if (from === "deck") {
@@ -3755,10 +3824,14 @@
     };
     var placed = false;
     if (reliefReady(reliefWaveFor(toCat, toRoom))) {
-      placed = moveStaffToRoom(
-        from === "deck" ? { kind: "deck", key: nameKey(person.name) } : { kind: "room", cat: fromCat, room: fromRoom },
-        toCat, toRoom, true
-      );
+      if (toCat === "ls") {
+        placed = assignLateStay(person, toRoom);
+      } else {
+        placed = moveStaffToRoom(
+          from === "deck" ? { kind: "deck", key: nameKey(person.name) } : { kind: "room", cat: fromCat, room: fromRoom },
+          toCat, toRoom, true
+        );
+      }
       if (placed) delete g.reliefPlan[k];
     }
     closeReliefRoster();
@@ -3802,9 +3875,13 @@
 
   function rosterPersonList(opts) {
     var cat = opts.cat, room = opts.room, purpose = opts.purpose;
-    var rec = g.roomStaff && g.roomStaff[cat] && g.roomStaff[cat][room];
+    var rec = occupantOf(cat, room);
     var exclude = rec && rec.name ? nameKey(rec.name) : "";
     var wave = nextReliefWave();
+    if (purpose === "relief") {
+      var rw = reliefWaveFor(cat, room);
+      if (typeof rw === "number") wave = rw;
+    }
     var deck = [];
     (g.onDeck || []).forEach(function (p) {
       if (!p || !p.name || isJunkStaff(p.name, p.shift)) return;
@@ -3846,9 +3923,10 @@
     var planned = purpose === "relief" ? plannedInn(cat, room) : null;
     var plannedKey = planned ? nameKey(planned.name) : "";
     if (purpose === "relief" && !planned) {
-      var idle = longestIdleDeck(list.deck);
+      var side = cat === "ls" ? roomSideOfName(rec && rec.name) : roomSide(cat, room);
+      var idle = longestIdleOnSide(list.deck, side);
       if (idle) {
-        planned = { name: idle.name, from: "deck", fromCat: "", fromRoom: "", shift: idle.shift };
+        planned = { name: idle.name, from: "deck", fromCat: "", fromRoom: "", shift: idle.shift, side: side };
         plannedKey = nameKey(idle.name);
       }
     }
@@ -3881,7 +3959,7 @@
       suggestHtml =
         '<button type="button" class="sites-choice relief-suggest" id="relief-suggest-btn">' +
         "<strong>Send " + chipName(planned.name) + "</strong>" +
-        "<span>" + (planned.from === "room" ? (planned.fromRoom || "in a room") : "On deck · longest idle") +
+        "<span>" + (planned.from === "room" ? (planned.fromRoom || "in a room") : ("On deck · longest idle" + (planned.side === "north" ? " on NT" : planned.side === "south" ? " on ST" : ""))) +
         " · tap to place</span></button>";
     }
 
@@ -4326,7 +4404,7 @@
     var hint =
       fn === "people" ? "Search a name, then send them to deck, move, or swap. Free now is longest-idle first."
       : fn === "relief" ? "Each row suggests who can cover. Plan holds them. Place moves them when that hour is close."
-      : "Tap a room to open or close it. Closing a staffed room asks where they go. Tap a name to move them.";
+      : "Tap a staffed room to move that person. Tap an empty room to open or close it.";
     var viewBtn = (g.lastSheet && g.lastSheet.cells) || (g.assignmentMeta && g.assignmentMeta.cells)
       ? '<button type="button" class="desk-upload-btn" id="desk-view-sheet">View uploaded sheet</button>'
       : "";
@@ -5360,7 +5438,7 @@
           if (g.sitesFn === "relief") return;
           var occ = occupantOf(catId, room);
           if (occ) {
-            openPourSheet(catId, room);
+            openPersonSheet("room", "", catId, room);
             return;
           }
           var on = true;
