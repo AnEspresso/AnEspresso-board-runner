@@ -1911,6 +1911,125 @@
     try { if (typeof showToast === "function") showToast(msg); } catch (e) {}
   }
 
+  function sheetIsLoaded() {
+    var m = g.assignmentMeta;
+    return !!(m && !m.cleared && m.seats && m.seats.length);
+  }
+
+  function seatKey(cat, room) {
+    return cat + "|" + room;
+  }
+
+  function closeUnstaffedRooms() {
+    if (!sheetIsLoaded()) return 0;
+    if (document.body && document.body.classList.contains("assigning")) return 0;
+    var n = 0;
+    if (typeof CATEGORIES === "undefined") return 0;
+    CATEGORIES.forEach(function (c) {
+      (c.rooms || []).forEach(function (room) {
+        if (g.keptOpen && g.keptOpen[seatKey(c.id, room)]) return;
+        if (occupantOf(c.id, room)) return;
+        var es = typeof catEditState !== "undefined" && catEditState[c.id];
+        var already = es && es.deletedRooms && es.deletedRooms.has(room);
+        if (g.roomStaff && g.roomStaff[c.id] && g.roomStaff[c.id][room] && g.roomStaff[c.id][room].name) {
+          g.roomStaff[c.id][room] = { name: "", shift: "", kind: "none", closed: true };
+        }
+        if (already) return;
+        deactivateRoomNow(c.id, room);
+        n++;
+      });
+    });
+    return n;
+  }
+
+  function collectSeats() {
+    var seats = [];
+    if (typeof CATEGORIES === "undefined") return seats;
+    CATEGORIES.forEach(function (c) {
+      (c.rooms || []).forEach(function (room) {
+        var rec = g.roomStaff && g.roomStaff[c.id] && g.roomStaff[c.id][room];
+        if (!rec || rec.closed || !rec.name || isJunkStaff(rec.name, rec.shift)) return;
+        seats.push({
+          cat: c.id, room: room, name: rec.name, shift: rec.shift || "",
+          kind: rec.kind || "none", student: !!rec.student, firstCase: rec.firstCase || ""
+        });
+      });
+    });
+    return seats;
+  }
+
+  function writeSeat(s) {
+    if (!s || !s.cat || !s.room || !s.name) return;
+    g.roomStaff = g.roomStaff || {};
+    if (!g.roomStaff[s.cat]) g.roomStaff[s.cat] = {};
+    g.roomStaff[s.cat][s.room] = {
+      name: s.name, shift: s.shift || "", kind: s.kind || breakKind(s.shift),
+      closed: false, student: !!s.student, firstCase: s.firstCase || ""
+    };
+    try {
+      var es = typeof catEditState !== "undefined" && catEditState[s.cat];
+      if (es && es.deletedRooms && typeof es.deletedRooms.delete === "function") {
+        es.deletedRooms.delete(s.room);
+        if (es.deletedEvents) es.deletedEvents[s.room] = { deleted: false, ts: Date.now() };
+      }
+      if (typeof weekendActive !== "undefined") {
+        weekendActive[s.cat] = weekendActive[s.cat] || {};
+        weekendActive[s.cat][s.room] = true;
+      }
+    } catch (e) {}
+    if (g.keptOpen) delete g.keptOpen[seatKey(s.cat, s.room)];
+  }
+
+  function personIsPlaced(name) {
+    try { return boardHits(name).length > 0; } catch (e) { return false; }
+  }
+
+  function liveBoardCounts() {
+    var on = 0, closed = 0, emptyOpen = 0;
+    if (typeof CATEGORIES === "undefined") return { on: 0, closed: 0, emptyOpen: 0 };
+    CATEGORIES.forEach(function (c) {
+      (c.rooms || []).forEach(function (room) {
+        var occ = occupantOf(c.id, room);
+        var es = typeof catEditState !== "undefined" && catEditState[c.id];
+        var shut = es && es.deletedRooms && es.deletedRooms.has(room);
+        if (occ) on++;
+        else if (shut) closed++;
+        else emptyOpen++;
+      });
+    });
+    return { on: on, closed: closed, emptyOpen: emptyOpen };
+  }
+
+  function repairVanishedSeats() {
+    var seats = g.assignmentMeta && g.assignmentMeta.seats;
+    if (!seats || !seats.length || g._repairing) return false;
+    if (document.body && document.body.classList.contains("assigning")) return false;
+    var missing = [];
+    seats.forEach(function (s) {
+      var rec = occupantOf(s.cat, s.room);
+      if (rec && namesMatch(rec.name, s.name)) return;
+      if (personIsPlaced(s.name)) return;
+      missing.push(s);
+    });
+    var wiped = missing.length >= Math.max(4, Math.floor(seats.length * 0.15));
+    var changed = false;
+    if (wiped) {
+      missing.forEach(function (s) { writeSeat(s); });
+      changed = true;
+    }
+    var closed = closeUnstaffedRooms();
+    if (!changed && !closed) return false;
+    g._repairing = true;
+    try {
+      publishStaff();
+      try { if (typeof refreshBoard === "function") refreshBoard(); } catch (e) {}
+      try { if (typeof saveShared === "function") saveShared(); } catch (e2) {}
+    } finally {
+      g._repairing = false;
+    }
+    return true;
+  }
+
   function applyAssignmentResult(res) {
     if (!res) return;
     if (res.kind === "split") {
@@ -1996,15 +2115,31 @@
       });
       g.lastSheet = { cells: res.cells || {}, date: res.date, file: res.fileName || res.file || "", kind: res.kind };
       try { localStorage.setItem("anespresso_runner_sheet_v1", JSON.stringify(g.lastSheet)); } catch (e) {}
+      g.keptOpen = {};
+      var seats = collectSeats();
       g.assignmentMeta = {
         date: res.date, kind: res.kind, file: res.fileName || "", pos: res.pos,
         lateN: (res.late || []).length, dinnerN: (res.dinner || []).length,
-        roomsN: openN, closedN: closedN,
+        roomsN: seats.length, closedN: closedN,
         unmatchedN: (res.unmatched || []).length, deckN: g.onDeck.length, appliedAt: now,
         lateStays: g.lateStays,
         calls: g.calls,
         runners: res.runners || null,
+        seats: seats,
         cleared: false
+      };
+      closeUnstaffedRooms();
+      var counts = liveBoardCounts();
+      var missing = [];
+      seats.forEach(function (s) {
+        var rec = occupantOf(s.cat, s.room);
+        if (!rec || !namesMatch(rec.name, s.name)) missing.push(s.room + " · " + s.name);
+      });
+      res.boardCheck = {
+        onBoard: counts.on,
+        closed: counts.closed,
+        emptyOpen: counts.emptyOpen,
+        missing: missing
       };
       g.reliefPlan = {};
       publishStaff();
@@ -2022,7 +2157,8 @@
       try { if (typeof renderDeskPeople === "function") renderDeskPeople(); } catch (e) {}
       try {
         if (typeof showToast === "function") {
-          showToast(openN + " rooms staffed · " + closedN + " closed");
+          if (missing.length) showToast(missing.length + " assignment" + (missing.length === 1 ? "" : "s") + " did not land");
+          else showToast(counts.on + " on the board · " + counts.closed + " closed");
         }
       } catch (e) {}
     } catch (e) {
@@ -3427,9 +3563,14 @@
       if (wantOn) {
         catEditState[catId].deletedRooms.delete(room);
         catEditState[catId].deletedEvents[room] = { deleted: false, ts: now };
+        if (!occupantOf(catId, room)) {
+          g.keptOpen = g.keptOpen || {};
+          g.keptOpen[seatKey(catId, room)] = 1;
+        }
       } else {
         catEditState[catId].deletedRooms.add(room);
         catEditState[catId].deletedEvents[room] = { deleted: true, ts: now };
+        if (g.keptOpen) delete g.keptOpen[seatKey(catId, room)];
       }
     }
     var btn = document.getElementById("wknd-" + catId + "-" + room.replace(/\s/g, "_"));
@@ -3710,6 +3851,13 @@
     var viewBtn = (g.lastSheet && g.lastSheet.cells) || (g.assignmentMeta && g.assignmentMeta.cells)
       ? '<button type="button" class="desk-upload-btn" id="desk-view-sheet">View uploaded sheet</button>'
       : "";
+    var counts = liveBoardCounts();
+    var check = sheetIsLoaded()
+      ? '<div class="desk-board-check' + (counts.emptyOpen ? " warn" : "") + '">' +
+        counts.on + " on the board · " + counts.closed + " closed" +
+        (counts.emptyOpen ? " · " + counts.emptyOpen + " open with nobody" : "") +
+        "</div>"
+      : "";
     var undoBtn = g.undoClose && g.undoClose.rec
       ? '<button type="button" class="desk-undo-btn" id="desk-undo-btn">Undo · ' + chipName(g.undoClose.rec.name) + " → " + g.undoClose.room + "</button>"
       : '<button type="button" class="desk-undo-btn" id="desk-undo-btn" style="display:none"></button>';
@@ -3720,6 +3868,7 @@
       "</div>" +
       '<div class="sites-fn-hint">' + hint + "</div>" +
       undoBtn +
+      check +
       '<button type="button" class="desk-upload-btn" id="desk-upload-btn">Upload assignment sheet</button>' +
       viewBtn +
       '<button type="button" class="desk-clear-btn" id="desk-clear-btn">Clear board</button>';
@@ -4267,8 +4416,12 @@
       catEditState[cat].deletedRooms.add(room);
       catEditState[cat].deletedEvents[room] = { deleted: true, ts: Date.now() };
     }
+    if (g.keptOpen) delete g.keptOpen[seatKey(cat, room)];
     var btn = document.getElementById("wknd-" + cat + "-" + room.replace(/\s/g, "_"));
-    if (btn) btn.classList.remove("active");
+    if (btn) {
+      btn.classList.remove("active");
+      btn.classList.add("room-inactive-marker");
+    }
   }
 
   function pourOff(cat, room) {
@@ -4801,6 +4954,7 @@
               if (raw) g.lastSheet = JSON.parse(raw);
             } catch (e2) {}
           }
+          try { repairVanishedSeats(); } catch (e3) {}
           renderOnDeck();
           if (document.getElementById("weekend-overlay") && document.getElementById("weekend-overlay").classList.contains("show")) {
             paintWkndStaff();
@@ -4874,6 +5028,7 @@
       g._refreshWrapped = true;
       var origRefresh = refreshBoard;
       window.refreshBoard = function () {
+        try { closeUnstaffedRooms(); } catch (e0) {}
         origRefresh.apply(this, arguments);
         renderOnDeck();
         renderLateBoardBar();
@@ -5736,16 +5891,23 @@
     var runLine = (ntRun || stRun)
       ? "<li>Runners " + (ntRun ? "NT " + ntRun : "") + (ntRun && stRun ? " · " : "") + (stRun ? "ST " + stRun : "") + "</li>"
       : "";
+    var bc = res.boardCheck || null;
+    var landed = bc ? bc.onBoard : (res.rooms || []).filter(function (r) { return r && r.name && !r.closed; }).length;
+    var shut = bc ? bc.closed : (res.closed || []).length;
+    var miss = (bc && bc.missing) || [];
+    var title = miss.length ? "Sheet did not fully land" : "Sheet applied";
     ov.innerHTML =
       '<div class="assign-upload-card">' +
-      "<h3>Sheet applied</h3>" +
+      "<h3>" + title + "</h3>" +
       "<p class='assign-meta'>" + (res.kind || "") + (res.date ? " · " + res.date : "") + (file ? " · " + file.name : "") + "</p>" +
       dateNote +
+      (miss.length ? '<div class="assign-warn">' + miss.length + " assignment" + (miss.length === 1 ? "" : "s") + " did not land on a room. The board was not marked complete.</div>" : "") +
       "<ul class='assign-stats'>" +
       runLine +
-      "<li>" + (res.rooms || []).filter(function (r) { return r && r.name && !r.closed; }).length + " rooms with a name</li>" +
-      "<li>" + (res.closed || []).length + " marked CLOSED</li>" +
-      (hideN ? "<li>" + hideN + " not on sheet (hidden)</li>" : "") +
+      "<li>" + landed + " on the board</li>" +
+      "<li>" + shut + " closed — not running today</li>" +
+      (bc && bc.emptyOpen ? "<li>" + bc.emptyOpen + " still open with nobody</li>" : "") +
+      (miss.length ? "<li>" + miss.slice(0, 8).join("; ") + "</li>" : "") +
       "<li>" + (res.late || []).length + " late (M+S)</li>" +
       "<li>" + (res.dinner || []).length + " dinner (Q+W+E)</li>" +
       "<li>" + ((res.onDeck || []).length) + " on deck (not in a room)</li>" +
@@ -6068,9 +6230,13 @@
         ".lg-late{background:#C8781A;}" +
         ".lg-dinner{background:#7A4E2D;}" +
         ".lg-off{background:#D9D0C6;}" +
-        ".staff-view-toggle{display:flex;gap:6px;margin:0 0 8px;}" +
-        ".staff-view-btn{flex:1;padding:9px 10px;min-height:40px;border-radius:10px;border:1.5px solid rgba(160,98,42,.25);background:#FEF6EC;color:#7A4E2D;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;}" +
-        ".staff-view-btn.on{background:linear-gradient(135deg,#7A4E2D,#9A6A38);color:#fff;border-color:#7A4E2D;}" +
+        ".staff-view-toggle{display:flex;gap:4px;margin:12px 0 0;padding:3px;border-radius:12px;background:#F6EFE6;}" +
+        ".staff-view-btn{flex:1;padding:8px 10px;min-height:36px;border-radius:9px;border:none;background:transparent;color:#7A4E2D;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;}" +
+        ".staff-view-btn.on{background:#fff;color:#1E0E04;box-shadow:0 1px 3px rgba(80,40,10,.12);}" +
+        ".need-now{display:block;width:100%;margin:8px 0 0;padding:4px 8px 2px;border:none;background:transparent;color:#9A6A38;font-size:13px;font-weight:700;text-align:center;cursor:pointer;font-family:inherit;text-decoration:underline;text-underline-offset:3px;}" +
+        ".need-now.on{color:#C0392B;font-weight:800;}" +
+        ".desk-board-check{font-size:13px;font-weight:800;color:#1E0E04;background:#FDF6EC;border:1px solid rgba(160,98,42,.2);border-radius:10px;padding:8px 10px;margin:0 0 8px;}" +
+        ".desk-board-check.warn{background:#FFF0F0;border-color:rgba(192,57,43,.35);color:#8E2A22;}" +
         "body.staff-view-jobs #board .cat-card,body.staff-view-jobs #board .ondeck-card{display:none;}" +
         ".staff-jobs-slot{margin-top:4px;padding-bottom:24px;}" +
         ".job-region{font-family:Georgia,'Times New Roman',serif;font-size:18px;font-weight:900;color:#1E0E04;margin:16px 0 2px;}" +
@@ -6155,8 +6321,8 @@
     html += '<div class="my-site-label">' +
       (view === "jobs" ? "Giving breaks" : "No room right now") +
       "</div>";
-    html += staffViewToggleHtml();
     if (view !== "jobs") html += '<div class="job-empty">The board is below. Breaks lists who is due.</div>';
+    html += staffViewToggleHtml();
     html += "</div>";
     panel.innerHTML = html;
   }
