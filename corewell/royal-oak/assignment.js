@@ -186,11 +186,13 @@
   }
 
   function lastNameCounts() {
-    var counts = {};
+    var people = {};
     function add(n) {
       var ln = lastName(n).toLowerCase();
-      if (!ln) return;
-      counts[ln] = (counts[ln] || 0) + 1;
+      var full = cleanName(n).toLowerCase();
+      if (!ln || !full) return;
+      if (!people[ln]) people[ln] = {};
+      people[ln][full] = 1;
     }
     Object.keys(g.roomStaff || {}).forEach(function (cat) {
       Object.keys(g.roomStaff[cat] || {}).forEach(function (room) {
@@ -199,6 +201,10 @@
       });
     });
     (g.onDeck || []).forEach(function (p) { if (p && p.name) add(p.name); });
+    var counts = {};
+    Object.keys(people).forEach(function (ln) {
+      counts[ln] = Object.keys(people[ln]).length;
+    });
     return counts;
   }
 
@@ -1588,10 +1594,11 @@
     if ((!rec || !rec.name) && typeof staffRecForRoom === "function") rec = staffRecForRoom(room, catId);
     if (!rec || rec.closed || !rec.name) return "";
     var nm = chipName(rec.name);
-    var size = nm.length > 10 ? " tiny" : nm.length > 7 ? " long" : "";
+    var size = nm.length > 10 ? " tiny" : nm.length > 8 ? " long" : "";
+    if (!size && hasStudent(rec) && nm.length >= 7) size = " long";
     var gone = !stillInHouse(rec.shift);
-    var start = rec.firstCase ? '<span class="staff-last">' + rec.firstCase + "</span>" : "";
-    return '<span class="staff-line staff-move" data-staff-cat="' + catId + '" data-staff-room="' + String(room).replace(/"/g, "") + '">' + shiftPillHtml(rec.shift) + '<span class="staff-name' + size + (gone ? " gone" : "") + '">' + nm + "</span>" + studentMark(hasStudent(rec)) + start + "</span>";
+    var when = rec.firstCase ? '<span class="staff-when">' + escHtml(rec.firstCase) + "</span>" : "";
+    return '<span class="staff-line staff-move" data-staff-cat="' + catId + '" data-staff-room="' + String(room).replace(/"/g, "") + '"><span class="staff-row">' + shiftPillHtml(rec.shift) + '<span class="staff-id"><span class="staff-name' + size + (gone ? " gone" : "") + '">' + nm + "</span>" + studentMark(hasStudent(rec)) + "</span></span>" + when + "</span>";
   }
 
   function roomBreakKind(catId, room) {
@@ -6069,21 +6076,25 @@
       st.id = "assign-upload-css";
       st.textContent =
         ".staff-chip{display:none;}" +
-        ".staff-line{display:flex;align-items:center;justify-content:center;gap:2px;margin-top:2px;white-space:nowrap;overflow:hidden;max-width:100%;}" +
-        ".shift-pill{flex:0 0 auto;font-size:8px;font-weight:800;letter-spacing:.02em;padding:1px 4px;border-radius:5px;background:rgba(122,78,45,.14);color:#7A4E2D;line-height:1.2;}" +
-        ".shift-pill.dr{background:transparent;border:1px solid rgba(122,78,45,.3);font-weight:700;font-size:7px;padding:1px 3px;}" +
-        ".shift-pill.wide{font-size:7px;padding:1px 3px;letter-spacing:0;}" +
-        ".shift-pill.time{font-size:6.5px;padding:1px 3px;letter-spacing:0;white-space:nowrap;}" +
+        ".staff-line{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;margin-top:1px;width:100%;min-width:0;max-width:100%;overflow:hidden;}" +
+        ".staff-row{display:flex;flex-wrap:nowrap;align-items:center;justify-content:center;gap:2px;width:100%;min-width:0;max-width:100%;}" +
+        ".shift-pill{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;min-width:13px;height:13px;padding:0 1px;border-radius:4px;background:rgba(122,78,45,.14);color:#7A4E2D;font-size:8px;font-weight:800;letter-spacing:0;line-height:1;}" +
+        ".shift-pill.dr{background:transparent;border:1px solid rgba(122,78,45,.3);font-weight:700;font-size:7px;min-width:15px;padding:0 2px;}" +
+        ".shift-pill.wide{font-size:7px;padding:0 2px;letter-spacing:0;min-width:13px;}" +
+        ".shift-pill.time{font-size:6.5px;padding:0 2px;letter-spacing:0;white-space:nowrap;min-width:0;}" +
         ".ondeck-chip .shift-pill{position:static;}" +
-        ".staff-name{font-size:10px;font-weight:600;color:#1E0E04;letter-spacing:-0.03em;}" +
-        ".staff-name.long{font-size:8px;}" +
-        ".staff-name.tiny{font-size:7px;letter-spacing:-0.05em;}" +
+        ".staff-id{display:inline-flex;align-items:center;justify-content:center;gap:1px;min-width:0;max-width:100%;flex:0 1 auto;white-space:nowrap;}" +
+        ".staff-name{font-size:10px;font-weight:700;color:#1E0E04;letter-spacing:-0.03em;min-width:0;overflow:hidden;text-overflow:clip;white-space:nowrap;flex:0 1 auto;}" +
+        ".staff-name.long{font-size:8.5px;letter-spacing:-0.04em;}" +
+        ".staff-name.tiny{font-size:7.5px;letter-spacing:-0.05em;}" +
         ".staff-stu{font-size:9px;font-weight:800;color:#C8781A;margin-left:1px;line-height:1;flex-shrink:0;}" +
         ".staff-last{font-size:10px;font-weight:500;color:#9A6A38;}" +
         ".staff-last::before{content:'·';margin:0 3px;color:rgba(122,78,45,.45);}" +
+        ".staff-when{display:block;width:100%;text-align:center;font-size:9px;font-weight:700;color:#9A6A38;line-height:1.1;letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}" +
         ".ondeck-hint{padding:0 12px 6px;font-size:11px;color:#9A6A38;}" +
         "body.assigning .room-btn,body.assigning .weekend-room-btn{box-shadow:inset 0 0 0 1.5px rgba(122,78,45,.35);}" +
         ".staff-move{position:relative;z-index:2;padding:1px 3px;border-radius:8px;}" +
+        ".room-btn .staff-move{padding:0;}" +
         "body.assigning .staff-move{pointer-events:none;}" +
         "#late-board-bar{display:none;padding:8px 14px 10px;background:transparent;border-bottom:none;font-size:12px;color:#1E0E04;}" +
         "#late-board-bar .late-board-title{font-weight:800;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#7A4E2D;margin-bottom:4px;}" +
@@ -6165,7 +6176,7 @@
         ".weekend-room-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:46px;padding:7px 4px 6px;text-decoration:none;}" +
         ".weekend-room-btn .wknd-room{font-size:11px;font-weight:700;line-height:1.1;}" +
         ".weekend-room-btn:not(.active) .wknd-room{text-decoration:line-through;}" +
-        ".weekend-room-btn .staff-line{margin-top:0;display:flex;align-items:center;justify-content:center;gap:2px;}" +
+        ".weekend-room-btn .staff-line{margin-top:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;width:100%;min-width:0;}" +
         ".weekend-room-btn .staff-name{font-size:10px;font-weight:700;color:#4A2E14;}" +
         ".weekend-room-btn.active .staff-name{color:#5A2E0A;}" +
         ".weekend-room-btn:not(.active) .staff-line{opacity:.55;}" +
