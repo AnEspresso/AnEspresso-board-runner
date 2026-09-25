@@ -766,10 +766,18 @@
     return items;
   }
 
+  function runnerFromLabel(raw) {
+    var m = String(raw || "").match(/board\s*runner\s*:?\s*(.+)$/i);
+    if (!m) return null;
+    var rest = m[1].replace(/\s+/g, " ").trim();
+    if (!rest) return null;
+    return parseStaff(rest);
+  }
+
   function parseWeekday(cells) {
     var date = excelDate(cell(cells, "H", 3));
-    var ntR = parseStaff(cell(cells, "E", 2));
-    var stR = parseStaff(cell(cells, "E", 3));
+    var ntR = parseStaff(cell(cells, "E", 2)) || runnerFromLabel(cell(cells, "C", 2));
+    var stR = parseStaff(cell(cells, "E", 3)) || runnerFromLabel(cell(cells, "C", 3));
     var rooms = [];
     var unmatched = [];
     var closed = [];
@@ -1620,7 +1628,11 @@
     if (parseShiftLabel(p.lastRoom)) return "";
     if (p.role === "unplaced" && p.lastRoom) return String(p.lastRoom).replace(/([A-Za-z])(\d)/g, "$1 $2");
     if (p.role === "freed" && p.lastRoom) return "last " + p.lastRoom;
-    if (p.role === "breaker") return p.lastRoom ? "BR " + p.lastRoom : "breaker";
+    if (p.role === "breaker") {
+      var where = String(p.lastRoom || "").trim();
+      if (!where || /^BR$/i.test(where) || /^breaker$/i.test(where)) return "breaker";
+      return "BR " + where;
+    }
     if (p.role === "needsroom") return "";
     if (p.role === "call") {
       var lab = String(p.lastRoom || "").trim();
@@ -3162,6 +3174,50 @@
     return hospitalHour() >= (wave || 15) - 1;
   }
 
+  function reliefWaveFor(cat, room) {
+    if (cat === "ls") {
+      var n = parseInt(String(room).replace(/\D/g, ""), 10);
+      var list = g.lateStays || (g.assignmentMeta && g.assignmentMeta.lateStays) || [];
+      var hit = list.filter(function (x) { return x && x.n === n; })[0];
+      if (hit && hit.wave) return hit.wave;
+    }
+    var occ = occupantOf(cat, room);
+    if (occ && coreShift(occ.shift) === "Dr") return "md";
+    if (occ) return shiftEndHour(occ.shift);
+    return 15;
+  }
+
+  function reliefReady(wave) {
+    if (wave === "md") return hospitalHour() >= 14;
+    return canPlaceRelief(wave);
+  }
+
+  function suggestRelief(wave, used) {
+    var pool = [];
+    (g.onDeck || []).forEach(function (p) {
+      if (!p || !p.name || isJunkStaff(p.name, p.shift)) return;
+      if (p.role === "call") return;
+      if (coreShift(p.shift) === "Dr") return;
+      var k = nameKey(p.name);
+      if (!k || (used && used[k])) return;
+      if (deckBucket(p) === "out") return;
+      var end = shiftEndHour(p.shift);
+      var start = shiftStartHour(p.shift);
+      if (end != null && end !== 99 && end <= wave) return;
+      if (deckBucket(p) === "later" && start > wave) return;
+      pool.push(p);
+    });
+    var now = pool.filter(function (p) {
+      return deckBucket(p) === "now" && !isLeavingSoon(p.shift, p);
+    });
+    if (now.length) {
+      sortByIdle(now);
+      return now[0];
+    }
+    pool.sort(function (a, b) { return shiftStartHour(a.shift) - shiftStartHour(b.shift); });
+    return pool[0] || null;
+  }
+
   function planKey(cat, room) { return cat + "|" + room; }
 
   function plannedInn(cat, room) {
@@ -3196,16 +3252,25 @@
     return rooms;
   }
 
-  function lateStayRows(wave) {
+  function lateStayRows(wave, used) {
     return (g.lateStays || (g.assignmentMeta && g.assignmentMeta.lateStays) || []).filter(function (p) {
       return p && p.wave === wave && p.name;
     }).sort(function (a, b) { return (a.n || 0) - (b.n || 0); }).map(function (p) {
       var room = "LS #" + p.n;
+      var inn = plannedInn("ls", room);
+      var suggested = false;
+      if (!inn) {
+        var sug = suggestRelief(wave, used);
+        if (sug) {
+          inn = sug;
+          suggested = true;
+          if (used) used[nameKey(sug.name)] = 1;
+        }
+      } else if (used) used[nameKey(inn.name)] = 1;
       return {
         cat: "ls", catName: "Late stay", room: room,
         out: { name: p.name, shift: p.shift || "", kind: "none" },
-        inn: plannedInn("ls", room),
-        wave: wave, latestay: true, lsN: p.n
+        inn: inn, suggested: suggested, wave: wave, latestay: true, lsN: p.n
       };
     });
   }
@@ -3225,16 +3290,29 @@
         if (shiftEndHour(rec.shift) !== wave) return;
         if (coreShift(rec.shift) === "Dr") return;
         var inn = plannedInn(c.id, room);
+        var suggested = false;
+        var intended = false;
         if (!inn) {
           var found = findIncomingFor(room, rec, used);
           if (found && found.p) {
             inn = found.p;
+            intended = true;
             used[nameKey(found.p.name)] = 1;
+          } else {
+            var sug = suggestRelief(wave, used);
+            if (sug) {
+              inn = sug;
+              suggested = true;
+              used[nameKey(sug.name)] = 1;
+            }
           }
         } else {
           used[nameKey(inn.name)] = 1;
         }
-        rooms.push({ cat: c.id, catName: c.name, room: room, out: rec, inn: inn, wave: wave });
+        rooms.push({
+          cat: c.id, catName: c.name, room: room, out: rec, inn: inn,
+          suggested: suggested, intended: intended, wave: wave
+        });
       });
     });
     var lsMap = lateStayByName();
@@ -3310,7 +3388,7 @@
       rooms.forEach(function (r) {
         if (r.out && r.out.name) seen[nameKey(r.out.name)] = 1;
       });
-      lateStayRows(w).forEach(function (row) {
+      lateStayRows(w, used).forEach(function (row) {
         var k = nameKey(row.out && row.out.name);
         if (!k || seen[k]) return;
         seen[k] = 1;
@@ -3420,7 +3498,7 @@
       student: !!person.student, from: from, fromCat: fromCat || "", fromRoom: fromRoom || "", fromKey: fromKey || nameKey(person.name)
     };
     var placed = false;
-    if (hospitalHour() >= 14) {
+    if (reliefReady(reliefWaveFor(toCat, toRoom))) {
       placed = moveStaffToRoom(
         from === "deck" ? { kind: "deck", key: nameKey(person.name) } : { kind: "room", cat: fromCat, room: fromRoom },
         toCat, toRoom, true
@@ -3829,6 +3907,60 @@
     openReliefRoster(catId, room);
   }
 
+  function reliefChipHtml(j) {
+    var committed = plannedInn(j.cat, j.room);
+    var inn = committed || j.inn || null;
+    var suggested = !committed && !!j.suggested && !!inn;
+    var locked = !!committed || !!j.intended;
+    var ready = reliefReady(j.wave === "md" ? "md" : j.wave);
+    var action = "";
+    if (inn && (locked || suggested)) {
+      action = '<span class="relief-need-place">' + (ready ? "Place" : "Plan") + "</span>";
+    }
+    var from = (committed && committed.from) || "deck";
+    var who = inn ? nameKey(inn.name) : "";
+    return '<button type="button" class="relief-need' + (locked ? " planned" : "") + '"' +
+      ' data-relcat="' + j.cat + '" data-relroom="' + String(j.room).replace(/"/g, "") + '"' +
+      ' data-relwave="' + (j.wave == null ? "" : j.wave) + '"' +
+      (who ? ' data-relwho="' + who + '"' : "") +
+      ' data-relfrom="' + from + '"' +
+      ' data-relfromcat="' + ((committed && committed.fromCat) || "") + '"' +
+      ' data-relfromroom="' + ((committed && committed.fromRoom) || "") + '">' +
+      '<span class="relief-room">' + (j.label || j.room) + "</span>" +
+      shiftPillHtml(j.out && j.out.shift) +
+      '<span class="staff-name">' + chipName(j.out && j.out.name) + "</span>" +
+      (j.latestay ? '<span class="staff-last">LS #' + j.lsN + "</span>" : "") +
+      '<span class="relief-arrow">→</span>' +
+      (inn ? shiftPillHtml(inn.shift) : "") +
+      '<span class="staff-name' + (inn && !suggested ? "" : " missing") + '">' +
+      (inn ? chipName(inn.name) : "pick") + "</span>" +
+      (suggested ? '<span class="staff-last">suggest</span>' : "") +
+      action + "</button>";
+  }
+
+  function bindReliefNeeds(root) {
+    if (!root) return;
+    root.querySelectorAll(".relief-need").forEach(function (el) {
+      el.onclick = function (ev) {
+        ev.stopPropagation();
+        var who = el.getAttribute("data-relwho") || "";
+        var place = ev.target && ev.target.classList && ev.target.classList.contains("relief-need-place");
+        if (place && who) {
+          pickRelief(
+            el.getAttribute("data-relfrom") || "deck",
+            el.getAttribute("data-relfromcat") || "",
+            el.getAttribute("data-relfromroom") || "",
+            who,
+            el.getAttribute("data-relcat"),
+            el.getAttribute("data-relroom")
+          );
+          return;
+        }
+        openReliefRoster(el.getAttribute("data-relcat"), el.getAttribute("data-relroom"));
+      };
+    });
+  }
+
   function renderShiftChange() {
     ensureRunnerDrawer();
     var boardCard = document.getElementById("card-relief");
@@ -3849,27 +3981,7 @@
     if (document.getElementById("desk-relief-pane") && g.sitesFn === "relief") renderDeskRelief();
     if (!show) return;
 
-    var hour = hospitalHour();
-    var chips = leave.rooms.map(function (j) {
-      var outNm = chipName(j.out.name);
-      var planned = !!plannedInn(j.cat, j.room) || !!j.inn;
-      var inNm = j.inn ? chipName(j.inn.name) : "pick";
-      var place = "";
-      if (canPlaceRelief(j.wave) && j.inn) {
-        place = '<span class="relief-need-place">Place</span>';
-      }
-      return '<button type="button" class="relief-need' + (planned ? " planned" : "") +
-        '" data-relcat="' + j.cat + '" data-relroom="' + j.room + '"' +
-        (j.inn ? ' data-relwho="' + nameKey(j.inn.name) + '"' : "") + ">" +
-        '<span class="relief-room">' + (j.label || j.room) + "</span>" +
-        shiftPillHtml(j.out.shift) +
-        '<span class="staff-name">' + outNm + "</span>" +
-        (j.latestay ? '<span class="staff-last">LS #' + j.lsN + "</span>" : "") +
-        '<span class="relief-arrow">→</span>' +
-        (j.inn ? shiftPillHtml(j.inn.shift) : "") +
-        '<span class="staff-name' + (j.inn ? "" : " missing") + '">' + inNm + "</span>" +
-        place + "</button>";
-    }).join("");
+    var chips = leave.rooms.map(reliefChipHtml).join("");
 
     var arrLine = arrivals.length
       ? '<div class="late-board-row">Coming on ' + arrivals.map(function (p) { return chipName(p.name); }).join(", ") + "</div>"
@@ -3878,25 +3990,11 @@
     bar.innerHTML =
       '<div class="shift-change-title">Shift change</div>' +
       '<div class="late-board-row"><strong>' + leave.rooms.length + " out at " + waveClock(leave.wave) +
-      "</strong> · tap a room to pick relief</div>" +
+      "</strong> · Plan holds them · Place when that hour is close</div>" +
       arrLine +
       '<div class="relief-need-grid">' + chips + "</div>";
 
-    bar.querySelectorAll(".relief-need").forEach(function (el) {
-      el.onclick = function (ev) {
-        ev.stopPropagation();
-        var cat = el.getAttribute("data-relcat");
-        var room = el.getAttribute("data-relroom");
-        var who = el.getAttribute("data-relwho") || "";
-        if (canPlaceRelief(leave.wave) && who && ev.target && ev.target.classList && ev.target.classList.contains("relief-need-place")) {
-          var plan = plannedInn(cat, room);
-          if (plan && plan.from === "room") pickRelief("room", plan.fromCat, plan.fromRoom, who, cat, room);
-          else pickRelief("deck", "", "", who, cat, room);
-          return;
-        }
-        openReliefRoster(cat, room);
-      };
-    });
+    bindReliefNeeds(bar);
   }
 
   function occupantOf(cat, room) {
@@ -3971,7 +4069,7 @@
     }
     var hint =
       fn === "people" ? "Search a name, then send them to deck, move, or swap. Free now is longest-idle first."
-      : fn === "relief" ? "Next wave is open. Later hours and doctors are folded. Late stays show once with LS #."
+      : fn === "relief" ? "Each row suggests who can cover. Plan holds them. Place moves them when that hour is close."
       : "Tap a room to open or close it. Closing a staffed room asks where they go. Tap a name to move them.";
     var viewBtn = (g.lastSheet && g.lastSheet.cells) || (g.assignmentMeta && g.assignmentMeta.cells)
       ? '<button type="button" class="desk-upload-btn" id="desk-view-sheet">View uploaded sheet</button>'
@@ -4012,29 +4110,12 @@
     var docs = collectDoctorRooms();
     var late = collectBreakQueue("late");
     var dinner = collectBreakQueue("dinner");
-    function chipHtml(j) {
-      var planned = !!plannedInn(j.cat, j.room) || !!j.inn;
-      var inNm = j.inn ? chipName(j.inn.name) : "pick";
-      var canPlace = (j.wave === "md" || canPlaceRelief(j.wave)) && j.inn;
-      var place = canPlace ? '<span class="relief-need-place">Place</span>' : "";
-      return '<button type="button" class="relief-need' + (planned ? " planned" : "") +
-        '" data-relcat="' + j.cat + '" data-relroom="' + j.room + '" data-relwave="' + j.wave + '"' +
-        (j.inn ? ' data-relwho="' + nameKey(j.inn.name) + '"' : "") + ">" +
-        '<span class="relief-room">' + (j.label || j.room) + "</span>" +
-        shiftPillHtml(j.out.shift) +
-        '<span class="staff-name">' + chipName(j.out.name) + "</span>" +
-        (j.latestay ? '<span class="staff-last">LS #' + j.lsN + "</span>" : "") +
-        '<span class="relief-arrow">→</span>' +
-        (j.inn ? shiftPillHtml(j.inn.shift) : "") +
-        '<span class="staff-name' + (j.inn ? "" : " missing") + '">' + inNm + "</span>" +
-        place + "</button>";
-    }
     var hour = hospitalHour();
     g.reliefOpen = g.reliefOpen || {};
     var blocks = waves.map(function (block, i) {
       var explicit = g.reliefOpen[block.wave];
       var open = explicit === undefined ? (i === 0) : !!explicit;
-      var chips = open ? block.rooms.map(chipHtml).join("") : "";
+      var chips = open ? block.rooms.map(reliefChipHtml).join("") : "";
       var title = "Out at " + waveClock(block.wave) + " · " + block.rooms.length;
       return '<button type="button" class="relief-wave-toggle" data-fold="wave" data-wave="' + block.wave + '" aria-expanded="' + (open ? "true" : "false") + '">' +
         (open ? "Hide · " : "") + title + (open ? " ▴" : " ▾") + "</button>" +
@@ -4044,7 +4125,7 @@
       var docsOpen = g.docsOpen === undefined ? (hour >= 16) : !!g.docsOpen;
       blocks += '<button type="button" class="relief-wave-toggle" data-fold="wave" data-wave="md" aria-expanded="' + (docsOpen ? "true" : "false") + '">' +
         (docsOpen ? "Hide · " : "") + "Doctors · usually 5:30 · " + docs.length + (docsOpen ? " ▴" : " ▾") + "</button>";
-      if (docsOpen) blocks += '<div class="relief-need-grid">' + docs.map(chipHtml).join("") + "</div>";
+      if (docsOpen) blocks += '<div class="relief-need-grid">' + docs.map(reliefChipHtml).join("") + "</div>";
     }
     pane.innerHTML =
       (blocks || '<div class="roster-empty">Nobody leaving yet</div>') +
@@ -4065,24 +4146,7 @@
         renderDeskRelief();
       };
     });
-    pane.querySelectorAll(".relief-need").forEach(function (el) {
-      el.onclick = function (ev) {
-        ev.stopPropagation();
-        var cat = el.getAttribute("data-relcat");
-        var room = el.getAttribute("data-relroom");
-        var who = el.getAttribute("data-relwho") || "";
-        var waveRaw = el.getAttribute("data-relwave");
-        var canPlace = waveRaw === "md" || canPlaceRelief(parseInt(waveRaw, 10));
-        if (canPlace && who && ev.target && ev.target.classList && ev.target.classList.contains("relief-need-place")) {
-          var plan = plannedInn(cat, room);
-          if (plan && plan.from === "room") pickRelief("room", plan.fromCat, plan.fromRoom, who, cat, room);
-          else pickRelief("deck", "", "", who, cat, room);
-          renderDeskRelief();
-          return;
-        }
-        openReliefRoster(cat, room);
-      };
-    });
+    bindReliefNeeds(pane);
     pane.querySelectorAll(".breakq-item[data-qcat]").forEach(function (el) {
       el.onclick = function (ev) {
         ev.stopPropagation();
