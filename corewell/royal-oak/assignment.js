@@ -2605,6 +2605,90 @@
     return arr;
   }
 
+  function roomSide(cat, room) {
+    var b = breakBucket({ cat: cat || "", room: room || "" });
+    return b && b.region ? b.region : "";
+  }
+
+  function placeSide(raw) {
+    var s = String(raw || "").replace(/\s+/g, " ").trim();
+    if (!s) return "";
+    var loc = null;
+    try { loc = normalizeRoom(s); } catch (e) {}
+    if (loc && loc.room) return roomSide(loc.cat, loc.room);
+    var u = s.toUpperCase();
+    if (u === "CT" || u === "US" || u === "U/S") return "either";
+    if (/MRI\s*1ST|1ST\s*MRI|^VCU\b|^BMB\b/.test(u)) return "south";
+    if (/^(ST|STE|SOUTH)\b/.test(u)) return "south";
+    if (/^(ENDO|2N|3N|CCS|CV|NT|IR|MRI|PB|EP|TEE|CATH|NUC)\b/.test(u)) return "north";
+    if (/^OB\b/.test(u)) return "other";
+    return "";
+  }
+
+  function breakerSide(raw) {
+    var s = String(raw || "").replace(/^BR\s+/i, "").trim();
+    if (!s || /^BR$/i.test(s) || /^breaker$/i.test(s)) return "";
+    if (/^(ENDO|2N|3N|CCS|CV|NT)\b/i.test(s)) return "north";
+    if (/^(ST|STE|SOUTH)\b/i.test(s)) return "south";
+    return placeSide(s);
+  }
+
+  function personSide(p) {
+    if (!p) return "";
+    if (p.side === "north" || p.side === "south" || p.side === "either" || p.side === "other") return p.side;
+    if (p.role === "breaker") {
+      var b = breakerSide(p.lastRoom);
+      if (b) return b;
+    }
+    if (p.role === "wbf") {
+      var w = placeSide(p.intended || p.lastRoom || "");
+      if (w) return w;
+    }
+    if (p.lastRoom) return placeSide(p.lastRoom);
+    return "";
+  }
+
+  function loanNote(p) {
+    var home = p && p.homeSide;
+    var cur = personSide(p);
+    if ((home === "north" || home === "south") && home !== cur) return "from " + home;
+    return "";
+  }
+
+  function freeSideGroups(people) {
+    var buckets = { north: [], south: [], either: [], other: [], "": [] };
+    (people || []).forEach(function (p) {
+      var s = personSide(p);
+      if (!buckets[s]) s = "";
+      buckets[s].push(p);
+    });
+    var order = [["north", "North"], ["south", "South"], ["either", "Either"], ["other", "OB"], ["", "No side yet"]];
+    var out = [];
+    order.forEach(function (pair) {
+      if (!buckets[pair[0]].length) return;
+      out.push({ id: pair[0] || "none", title: pair[1], people: buckets[pair[0]] });
+    });
+    return out;
+  }
+
+  function sideBlockHtml(people, chipFn) {
+    var groups = freeSideGroups(people);
+    if (!groups.length) return "";
+    return groups.map(function (s) {
+      return '<div class="ondeck-side-title">' + s.title + " · " + s.people.length + "</div>" +
+        '<div class="ondeck-grid">' + s.people.map(chipFn).join("") + "</div>";
+    }).join("");
+  }
+
+  function sideRosterHtml(people, pillFn) {
+    var groups = freeSideGroups(people);
+    if (!groups.length) return "";
+    return groups.map(function (s) {
+      return '<div class="assign-cat-label">' + s.title + " · " + s.people.length + "</div>" +
+        '<div class="roster-grid">' + s.people.map(pillFn).join("") + "</div>";
+    }).join("");
+  }
+
   function renderOnDeck() {
     var board = document.getElementById("board");
     if (!board) return;
@@ -2651,15 +2735,17 @@
       var key = nameKey(p.name);
       var tag = deckTag(p);
       var last = tag ? '<span class="staff-last">' + tag + "</span>" : "";
+      var loan = mark === "" ? loanNote(p) : "";
+      var from = loan ? '<span class="staff-last">' + loan + "</span>" : "";
       var on = sel === key ? " selected" : "";
       return '<button type="button" class="ondeck-chip' + (mark ? " " + mark : "") + on + '" data-deck="' + key + '">' +
         shiftPillHtml(p.shift) + '<span class="staff-name">' + chipName(p.name) + "</span>" + studentMark(hasStudent(p)) + last +
+        from +
         (mark === "out" ? '<span class="staff-last">out</span>' : (mark === "later" ? '<span class="staff-last">later</span>' : "")) +
         "</button>";
     }
     var needChips = needs.map(function (p) { return chipHtml(p, "need"); }).join("");
     var callChips = calls.map(function (p) { return chipHtml(p, "call"); }).join("");
-    var hereChips = here.map(function (p) { return chipHtml(p, ""); }).join("");
     var laterChips = later.map(function (p) { return chipHtml(p, "later"); }).join("");
     var goneChips = gone.map(function (p) { return chipHtml(p, "out"); }).join("");
     var laterOpen = !!g.deckLaterOpen;
@@ -2684,7 +2770,7 @@
           ? '<div class="ondeck-hint">Tap who goes in ' + g.fillTarget.room + "</div>"
           : (sel
             ? '<div class="ondeck-hint">Tap a room to place them · tap the chip again to cancel</div>'
-            : '<div class="ondeck-hint">Longest idle first · tap someone, then tap a room</div>')));
+            : '<div class="ondeck-hint">North and south · tap someone, then tap a room</div>')));
     var run = runnerLineText();
     var runHtml = run ? '<div class="ondeck-runners">' + escHtml(run) + "</div>" : "";
     var needBlock = needs.length
@@ -2695,11 +2781,24 @@
       ? '<div class="ondeck-call-title">Call · ' + calls.length + "</div>" +
         '<div class="ondeck-grid ondeck-call-grid">' + callChips + "</div>"
       : "";
+    var northN = 0, southN = 0, eitherN = 0, obN = 0, noneN = 0;
+    here.forEach(function (p) {
+      var s = personSide(p);
+      if (s === "north") northN++;
+      else if (s === "south") southN++;
+      else if (s === "either") eitherN++;
+      else if (s === "other") obN++;
+      else noneN++;
+    });
+    var sideBits = [northN + " north", southN + " south"];
+    if (eitherN) sideBits.push(eitherN + " either");
+    if (obN) sideBits.push(obN + " ob");
+    if (noneN) sideBits.push(noneN + " no side");
     var sub = needs.length
       ? (needs.length + " need a room · " + here.length + " free")
-      : "Free now · longest idle first";
+      : sideBits.join(" · ");
     var headN = needs.length || here.length;
-    var headLbl = needs.length ? "need" : "now";
+    var headLbl = needs.length ? "need" : "free";
     card.innerHTML =
       '<div class="cat-header-row"><div class="cup-indicator">☕</div><div class="cat-info">' +
       '<div class="cat-name">On deck</div>' +
@@ -2709,8 +2808,10 @@
       runHtml +
       hint +
       needBlock +
-      '<div class="ondeck-grid">' + (hereChips || '<span class="roster-empty">Nobody free right now</span>') + "</div>" +
       callBlock +
+      (here.length
+        ? sideBlockHtml(here, function (p) { return chipHtml(p, ""); })
+        : '<div class="ondeck-grid"><span class="roster-empty">Nobody free right now</span></div>') +
       laterBtn +
       outBtn;
     function inBucket(arr, key) {
@@ -2766,7 +2867,8 @@
       room: room,
       rec: rec && rec.name ? {
         name: rec.name, shift: rec.shift || "", kind: rec.kind || "none",
-        student: !!rec.student, closed: false
+        student: !!rec.student, closed: false, homeSide: rec.homeSide || "",
+        firstCase: rec.firstCase || ""
       } : null,
       ts: Date.now()
     };
@@ -2783,7 +2885,8 @@
       g.onDeck = (g.onDeck || []).filter(function (p) { return nameKey(p.name) !== k; });
       g.roomStaff[u.cat][u.room] = {
         name: u.rec.name, shift: u.rec.shift, kind: u.rec.kind,
-        closed: false, student: !!u.rec.student
+        closed: false, student: !!u.rec.student, homeSide: u.rec.homeSide || "",
+        firstCase: u.rec.firstCase || ""
       };
     }
     try { applyRoomActive(u.cat, u.room, true); } catch (e) {}
@@ -2828,6 +2931,18 @@
     }
   }
 
+  function freedDeckRec(rec, lastRoom, cat) {
+    var side = cat ? roomSide(cat, lastRoom) : placeSide(lastRoom);
+    var home = (rec && rec.homeSide) || "";
+    if (home === side) home = "";
+    return {
+      name: rec.name, shift: rec.shift || "", kind: rec.kind || "none",
+      lastRoom: lastRoom || "", role: "freed", student: !!rec.student,
+      firstCase: rec.firstCase || "", freedAt: Date.now(),
+      side: side, homeSide: home
+    };
+  }
+
   function pushOnDeckFromRoom(catId, room) {
     var rec = g.roomStaff && g.roomStaff[catId] && g.roomStaff[catId][room];
     if (!rec || !rec.name) return;
@@ -2835,10 +2950,7 @@
     g.onDeck = g.onDeck || [];
     var k = nameKey(rec.name);
     g.onDeck = g.onDeck.filter(function (p) { return nameKey(p.name) !== k; });
-    g.onDeck.unshift({
-      name: rec.name, shift: rec.shift || "", kind: rec.kind || "none",
-      lastRoom: room, role: "freed", student: !!rec.student, freedAt: Date.now()
-    });
+    g.onDeck.unshift(freedDeckRec(rec, room, catId));
     delete g.roomStaff[catId][room];
     publishStaff();
     renderOnDeck();
@@ -2864,7 +2976,7 @@
     return {
       name: rec.name, shift: rec.shift || "", kind: rec.kind || "none",
       closed: false, student: !!rec.student, firstCase: rec.firstCase || "",
-      early: !!rec.early, orient: !!rec.orient
+      early: !!rec.early, orient: !!rec.orient, homeSide: rec.homeSide || ""
     };
   }
 
@@ -2883,6 +2995,7 @@
     g.selectedDeck = null;
     g.heldMove = null;
     g.moveHint = "";
+    g.sidePass = null;
     try { document.body.classList.remove("assigning"); } catch (e) {}
     refreshMoveHints();
   }
@@ -2917,11 +3030,7 @@
     g.onDeck = g.onDeck || [];
     var k = nameKey(rec.name);
     g.onDeck = g.onDeck.filter(function (p) { return nameKey(p.name) !== k; });
-    g.onDeck.unshift({
-      name: rec.name, shift: rec.shift || "", kind: rec.kind || "none",
-      lastRoom: lastRoom || "", role: "freed", student: !!rec.student,
-      firstCase: rec.firstCase || "", freedAt: Date.now()
-    });
+    g.onDeck.unshift(freedDeckRec(rec, lastRoom, ""));
     if (select) {
       g.selectedDeck = k;
       g.heldMove = null;
@@ -2940,6 +3049,18 @@
     refreshMoveHints();
   }
 
+  function homeForMove(mover, currentSide, toCat, toRoom) {
+    if (!mover) return "";
+    var dest = roomSide(toCat, toRoom);
+    var home = mover.homeSide || "";
+    var crossing = (currentSide === "north" || currentSide === "south") &&
+      (dest === "north" || dest === "south") && currentSide !== dest;
+    if (!home && crossing) home = currentSide;
+    if (home !== "north" && home !== "south") return "";
+    if (home === dest) return "";
+    return home;
+  }
+
   function finishPlant(held, toCat, toRoom, how) {
     if (!held || !toCat || !toRoom) return false;
     g.roomStaff = g.roomStaff || {};
@@ -2956,18 +3077,24 @@
       if (idx < 0) { clearHeld(); return false; }
       mover = list[idx];
       moverName = mover.name;
+      var deckSide = personSide(mover);
       list.splice(idx, 1);
       if (how === "swap" && occ) sendRecToDeck(occ, toRoom, true);
       else if (how === "hand" && occ) sendRecToDeck(occ, toRoom, true);
       else if (how === "bump" && occ) sendRecToDeck(occ, toRoom, false);
-      g.roomStaff[toCat][toRoom] = cloneStaffRec(mover);
+      var placed = cloneStaffRec(mover);
+      placed.homeSide = homeForMove(mover, deckSide, toCat, toRoom);
+      g.roomStaff[toCat][toRoom] = placed;
     } else {
       mover = occupantOf(held.cat, held.room);
       if (!mover) { clearHeld(); return false; }
       moverName = mover.name;
+      var roomSideNow = roomSide(held.cat, held.room);
       if (how === "swap" && occ) {
         var a = cloneStaffRec(mover);
         var b = cloneStaffRec(occ);
+        a.homeSide = homeForMove(mover, roomSideNow, toCat, toRoom);
+        b.homeSide = homeForMove(occ, roomSide(toCat, toRoom), held.cat, held.room);
         g.roomStaff[held.cat] = g.roomStaff[held.cat] || {};
         g.roomStaff[held.cat][held.room] = b;
         g.roomStaff[toCat][toRoom] = a;
@@ -2985,7 +3112,9 @@
       }
       if (how === "hand" && occ) sendRecToDeck(occ, toRoom, true);
       else if (how === "bump" && occ) sendRecToDeck(occ, toRoom, false);
-      g.roomStaff[toCat][toRoom] = cloneStaffRec(mover);
+      var moved = cloneStaffRec(mover);
+      moved.homeSide = homeForMove(mover, roomSideNow, toCat, toRoom);
+      g.roomStaff[toCat][toRoom] = moved;
       g.roomStaff[held.cat] = g.roomStaff[held.cat] || {};
       delete g.roomStaff[held.cat][held.room];
       closeRoomIfEmpty(held.cat, held.room);
@@ -3000,6 +3129,7 @@
     if (!keepHand) clearHeld();
     else {
       g.heldMove = null;
+      g.sidePass = null;
     }
     afterStaffMove();
     try {
@@ -3060,6 +3190,68 @@
     return true;
   }
 
+  function heldMover(held) {
+    if (!held) return null;
+    if (held.kind === "deck") {
+      return (g.onDeck || []).filter(function (p) { return nameKey(p.name) === held.key; })[0] || null;
+    }
+    return occupantOf(held.cat, held.room);
+  }
+
+  function moverCurrentSide(held, mover) {
+    if (!held || !mover) return "";
+    if (held.kind === "deck") return personSide(mover);
+    return roomSide(held.cat, held.room);
+  }
+
+  function sidePassMatches(held, toCat, toRoom) {
+    var pass = g.sidePass;
+    if (!pass || pass.toCat !== toCat || pass.toRoom !== toRoom) return false;
+    if (held.kind === "deck") return pass.kind === "deck" && pass.key === held.key;
+    return pass.kind === "room" && pass.cat === held.cat && pass.room === held.room;
+  }
+
+  function needsSideAsk(held, mover, toCat, toRoom) {
+    if (hospitalHour() >= 15) return false;
+    if (sidePassMatches(held, toCat, toRoom)) return false;
+    var cur = moverCurrentSide(held, mover);
+    var dest = roomSide(toCat, toRoom);
+    if ((cur !== "north" && cur !== "south") || (dest !== "north" && dest !== "south")) return false;
+    return cur !== dest;
+  }
+
+  function closeSideAsk() {
+    var ov = document.getElementById("side-ask-overlay");
+    if (ov) ov.remove();
+  }
+
+  function askSideTrade(held, mover, toCat, toRoom) {
+    closeSideAsk();
+    var cur = moverCurrentSide(held, mover);
+    var dest = roomSide(toCat, toRoom);
+    var ov = document.createElement("div");
+    ov.id = "side-ask-overlay";
+    ov.className = "deact-sheet-overlay";
+    ov.innerHTML =
+      '<div class="deact-sheet">' +
+      '<div class="deact-kicker">Other tower</div>' +
+      '<div class="deact-who">' + shiftPillHtml(mover.shift) + '<span class="staff-name">' + chipName(mover.name) + "</span></div>" +
+      '<div class="deact-ask">' + chipName(mover.name) + " is " + cur + ". Put them in " + toRoom + "?</div>" +
+      '<button type="button" class="deact-choice" data-act="yes"><span class="deact-choice-title">Send them ' + dest + '</span><span class="deact-choice-sub">They stay marked from ' + cur + "</span></button>" +
+      '<button type="button" class="deact-cancel" data-act="cancel">Cancel</button></div>';
+    ov.addEventListener("click", function (e) { if (e.target === ov) closeSideAsk(); });
+    ov.querySelector('[data-act="cancel"]').onclick = function () { closeSideAsk(); };
+    ov.querySelector('[data-act="yes"]').onclick = function () {
+      closeSideAsk();
+      g.sidePass = held.kind === "deck"
+        ? { kind: "deck", key: held.key, toCat: toCat, toRoom: toRoom }
+        : { kind: "room", cat: held.cat, room: held.room, toCat: toCat, toRoom: toRoom };
+      plantHeldInto(toCat, toRoom);
+    };
+    document.body.appendChild(ov);
+    return true;
+  }
+
   function plantHeldInto(toCat, toRoom) {
     var held = heldFrom();
     if (!held) return false;
@@ -3069,6 +3261,8 @@
       renderOnDeck();
       return true;
     }
+    var mover = heldMover(held);
+    if (mover && needsSideAsk(held, mover, toCat, toRoom)) return askSideTrade(held, mover, toCat, toRoom);
     var occ = occupantOf(toCat, toRoom);
     if (held.intent === "swap") {
       if (!occ) return finishPlant(held, toCat, toRoom, "empty");
@@ -3451,7 +3645,7 @@
     } else {
       var rec = g.roomStaff[from.cat] && g.roomStaff[from.cat][from.room];
       if (!rec || !rec.name) return false;
-      person = { name: rec.name, shift: rec.shift, kind: rec.kind, student: rec.student };
+      person = { name: rec.name, shift: rec.shift, kind: rec.kind, student: rec.student, homeSide: rec.homeSide || "" };
       g.roomStaff[from.cat][from.room] = { name: "", shift: "", kind: "none", closed: !!closeFrom };
       if (closeFrom && typeof catEditState !== "undefined" && catEditState[from.cat]) {
         catEditState[from.cat].deletedRooms.add(from.room);
@@ -3462,14 +3656,13 @@
     var occ = g.roomStaff[toCat][toRoom];
     if (occ && occ.name) {
       g.onDeck = g.onDeck || [];
-      g.onDeck.unshift({
-        name: occ.name, shift: occ.shift || "", kind: occ.kind || "none",
-        lastRoom: toRoom, role: "freed", student: !!occ.student
-      });
+      g.onDeck.unshift(freedDeckRec(occ, toRoom, toCat));
     }
+    var fromSide = from.kind === "deck" ? personSide(person) : roomSide(from.cat, from.room);
     g.roomStaff[toCat][toRoom] = {
       name: person.name, shift: person.shift || "", kind: person.kind || "none",
-      closed: false, student: !!person.student
+      closed: false, student: !!person.student,
+      homeSide: homeForMove(person, fromSide, toCat, toRoom)
     };
     if (typeof catEditState !== "undefined" && catEditState[toCat]) {
       catEditState[toCat].deletedRooms.delete(toRoom);
@@ -4165,6 +4358,16 @@
         el.style.display = hit ? "" : "none";
         if (hit) shown++;
       });
+      pane.querySelectorAll(".assign-cat-label").forEach(function (lab) {
+        var grid = lab.nextElementSibling;
+        if (!grid || !grid.querySelector("[data-deckkey]")) return;
+        var any = false;
+        grid.querySelectorAll("[data-deckkey]").forEach(function (el) {
+          if (el.style.display !== "none") any = true;
+        });
+        lab.style.display = any ? "" : "none";
+        grid.style.display = any ? "" : "none";
+      });
     }
     var rooms = document.getElementById("weekend-rooms-container");
     if (rooms && g.sitesFn === "people") {
@@ -4186,13 +4389,14 @@
     var q = nameKey(g.deskPeopleQ || "");
     function pill(p, mark) {
       var tag = deckTag(p);
+      var loan = mark === "" ? loanNote(p) : "";
       return '<button type="button" class="roster-pill' + (mark ? " " + mark : "") + '" data-deckkey="' + nameKey(p.name) + '">' +
         shiftPillHtml(p.shift) + '<span class="staff-name">' + chipName(p.name) + "</span>" +
         studentMark(hasStudent(p)) + (tag ? '<span class="staff-last">' + tag + "</span>" : "") +
+        (loan ? '<span class="staff-last">' + loan + "</span>" : "") +
         (mark === "out" ? '<span class="staff-last">out</span>' : (mark === "later" ? '<span class="staff-last">later</span>' : "")) +
         "</button>";
     }
-    var hereChips = here.map(function (p) { return pill(p, ""); }).join("");
     var laterChips = later.map(function (p) { return pill(p, "later"); }).join("");
     var goneChips = gone.map(function (p) { return pill(p, "out"); }).join("");
     var laterOpen = !!g.deskLaterOpen;
@@ -4250,8 +4454,9 @@
       '<input id="desk-people-q" class="desk-people-search" type="search" placeholder="Search a name" autocomplete="off" autocorrect="off" spellcheck="false">' +
       '<button type="button" class="desk-add-btn" id="desk-add-staff">Add someone who came in</button>' +
       needBlock +
-      '<div class="assign-cat-label">Free now · longest idle first</div>' +
-      '<div class="roster-grid">' + (hereChips || '<span class="roster-empty">Nobody free right now</span>') + "</div>" +
+      (here.length
+        ? sideRosterHtml(here, function (p) { return pill(p, ""); })
+        : '<div class="assign-cat-label">Free now</div><div class="roster-grid"><span class="roster-empty">Nobody free right now</span></div>') +
       laterBlock +
       outBlock +
       callBlock +
@@ -5019,7 +5224,7 @@
         var occ = occupantOf(cat, room);
         if (occ) {
           g.onDeck = g.onDeck || [];
-          g.onDeck.unshift({ name: occ.name, shift: occ.shift || "", kind: occ.kind || "none", lastRoom: room, role: "freed", student: !!occ.student });
+          g.onDeck.unshift(freedDeckRec(occ, room, cat));
         }
         g.roomStaff[cat][room] = { name: name, shift: picked.shift, kind: breakKind(picked.shift), closed: false };
         if (typeof catEditState !== "undefined" && catEditState[cat]) {
@@ -5458,10 +5663,7 @@
     var occ = g.roomStaff[loc.cat][loc.room];
     if (occ && occ.name && !namesMatch(occ.name, item.name)) {
       g.onDeck = g.onDeck || [];
-      g.onDeck.unshift({
-        name: occ.name, shift: occ.shift || "", kind: occ.kind || "none",
-        lastRoom: loc.room, role: "freed", student: !!occ.student
-      });
+      g.onDeck.unshift(freedDeckRec(occ, loc.room, loc.cat));
     }
     g.roomStaff[loc.cat][loc.room] = {
       name: item.name, shift: item.shift || "", kind: item.kind || breakKind(item.shift),
@@ -6321,8 +6523,9 @@
         ".ondeck-chip.need{border-color:#C8781A;background:#FFF0D8;}" +
         ".ondeck-chip.call{border-color:#1A6A9A;background:#E7F1FA;}" +
         ".ondeck-need-title,.ondeck-call-title{padding:2px 12px 0;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#A05A10;}" +
+        ".ondeck-side-title{padding:2px 12px 4px;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#7A4E2D;}" +
         ".ondeck-call-title{color:#1A6A9A;margin-top:2px;}" +
-        ".roster-pill.need{border-color:#C8781A;background:#FFF0D8;}" + +
+        ".roster-pill.need{border-color:#C8781A;background:#FFF0D8;}" +
         ".ondeck-chip.selected{border-color:#7A4E2D;background:#F5E6D0;box-shadow:inset 0 0 0 1px #7A4E2D;}" +
         ".ondeck-out-toggle{display:flex;align-items:center;justify-content:center;gap:6px;margin:2px 12px 10px;padding:8px 10px;width:calc(100% - 24px);box-sizing:border-box;border-radius:8px;border:1px dashed rgba(122,78,45,.35);background:#FBF6F0;color:#7A4E2D;font:inherit;font-size:12px;font-weight:700;cursor:pointer;-webkit-appearance:none;appearance:none;}" +
         ".ondeck-out-grid{opacity:.95;padding-top:0;}" +
@@ -6547,6 +6750,7 @@
   g.staffChipHtml = staffChipHtml;
   g.renderLateBoardBar = renderLateBoardBar;
   g.renderOnDeck = renderOnDeck;
+  g.renderDeskPeople = renderDeskPeople;
   g.renderShiftChange = renderShiftChange;
   g.ensureRunnerDrawer = ensureRunnerDrawer;
   g.mountUploadButton = mountUploadButton;
