@@ -2689,7 +2689,70 @@
     }).join("");
   }
 
+  function sideCoverage() {
+    var inRoom = { north: {}, south: {} };
+    Object.keys(g.roomStaff || {}).forEach(function (cat) {
+      Object.keys(g.roomStaff[cat] || {}).forEach(function (room) {
+        if (!roomIsActive(cat, room)) return;
+        var rec = occupantOf(cat, room);
+        if (!rec || !rec.name || isJunkStaff(rec.name, rec.shift)) return;
+        var side = roomSide(cat, room);
+        if (side !== "north" && side !== "south") return;
+        inRoom[side][nameKey(rec.name)] = 1;
+      });
+    });
+    var free = { north: 0, south: 0 };
+    var list = (g.onDeck || []).filter(function (p) {
+      return p && p.name && !isJunkStaff(p.name, p.shift) && p.role !== "call" && p.role !== "needsroom";
+    });
+    splitDeck(list).now.forEach(function (p) {
+      var s = personSide(p);
+      if (s === "north" || s === "south") free[s]++;
+    });
+    return {
+      nt: Object.keys(inRoom.north).length,
+      st: Object.keys(inRoom.south).length,
+      ntFree: free.north,
+      stFree: free.south
+    };
+  }
+
+  function renderSideCounts() {
+    var bar = document.getElementById("time-poc-bar");
+    var el = document.getElementById("side-counts");
+    var runner = false;
+    try { runner = typeof currentRole !== "undefined" && currentRole === "runner"; } catch (e) {}
+    if (!bar || !runner) {
+      if (el) el.remove();
+      return;
+    }
+    var c = sideCoverage();
+    if (!c.nt && !c.st && !c.ntFree && !c.stFree) {
+      if (el) el.remove();
+      return;
+    }
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "side-counts";
+      el.className = "side-counts";
+      var poc = bar.querySelector(".poc-block");
+      if (poc) bar.insertBefore(el, poc);
+      else bar.appendChild(el);
+    }
+    function col(side, n, freeN) {
+      return '<div class="side-count" data-side="' + side + '">' +
+        '<span class="side-count-k">' + side.toUpperCase() + "</span>" +
+        '<span class="side-count-n">' + n + "</span>" +
+        '<span class="side-count-sub">rooms</span>' +
+        (freeN ? '<span class="side-count-sub">' + freeN + " free</span>" : "") +
+        "</div>";
+    }
+    el.title = "People in a room. NT includes Endo, CCS, EP, and north NORA. ST includes Ste. 100, MRI 1ST, VCU, and BMB.";
+    el.innerHTML = col("nt", c.nt, c.ntFree) + col("st", c.st, c.stFree);
+  }
+
   function renderOnDeck() {
+    try { renderSideCounts(); } catch (e) {}
     var board = document.getElementById("board");
     if (!board) return;
     var card = document.getElementById("card-ondeck");
@@ -6524,6 +6587,13 @@
         ".ondeck-chip.call{border-color:#1A6A9A;background:#E7F1FA;}" +
         ".ondeck-need-title,.ondeck-call-title{padding:2px 12px 0;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#A05A10;}" +
         ".ondeck-side-title{padding:2px 12px 4px;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#7A4E2D;}" +
+        ".side-counts{display:flex;align-items:flex-start;gap:14px;}" +
+        ".side-count{display:flex;flex-direction:column;align-items:center;min-width:36px;}" +
+        ".side-count-k{font-size:9px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:#9A6A38;line-height:1;}" +
+        ".side-count-n{font-family:Georgia,'Times New Roman',serif;font-size:22px;font-weight:900;color:#2C1A0E;line-height:1;margin-top:2px;}" +
+        ".side-count-sub{font-size:9px;font-weight:700;color:#9A6A38;margin-top:2px;line-height:1;}" +
+        "body.nighttime-mode .side-count-k,body.nighttime-mode .side-count-sub{color:#5A4D9A;}" +
+        "body.nighttime-mode .side-count-n{color:#3D3473;}" +
         ".ondeck-call-title{color:#1A6A9A;margin-top:2px;}" +
         ".roster-pill.need{border-color:#C8781A;background:#FFF0D8;}" +
         ".ondeck-chip.selected{border-color:#7A4E2D;background:#F5E6D0;box-shadow:inset 0 0 0 1px #7A4E2D;}" +
